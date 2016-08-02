@@ -56,7 +56,7 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   set(LIBEXECDIR "/usr/libexec")
 
   EXECUTE_PROCESS(
-      COMMAND source /etc/os-release ; echo $NAME
+      COMMAND awk -F=  "/^NAME=/ { print $2 }" /etc/os-release
       OUTPUT_VARIABLE SYS_RELEASE
       ERROR_QUIET
    )
