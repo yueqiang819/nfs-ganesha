@@ -13,6 +13,9 @@ CMakeFiles/
 build/
 
 # files
+CMakeCache.txt
+CPackConfig.cmake
+CPackSourceConfig.cmake
 *.kdevelop*
 *.kdevses
 TAGS
