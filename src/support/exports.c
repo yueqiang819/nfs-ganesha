@@ -583,6 +583,18 @@ static int fsal_commit(void *node, void *link_mem, void *self_struct,
 			pathlen--;
 		export->fullpath[pathlen] = '\0';
 	}
+
+	/* Remove trailing slash */
+	if (export->pseudopath && export->pseudopath[0] == '/') {
+		int pathlen;
+
+		pathlen = strlen(export->pseudopath);
+		while ((export->pseudopath[pathlen - 1] == '/') &&
+		       (pathlen > 1))
+			pathlen--;
+		export->pseudopath[pathlen] = '\0';
+	}
+
 	status = fsal->m_ops.create_export(fsal,
 					   node, err_type,
 					  &fsal_up_top);
@@ -1360,6 +1372,8 @@ static int build_default_root(struct config_error_type *err_type)
 	 * Root is allowed
 	 * MD Read Access
 	 * Allow use of default auth types
+	 *
+	 * Allow non-privileged client ports to access pseudo export.
 	 */
 	export->export_perms.options = EXPORT_OPTION_ROOT |
 					EXPORT_OPTION_MD_READ_ACCESS |
@@ -1371,7 +1385,8 @@ static int build_default_root(struct config_error_type *err_type)
 				    EXPORT_OPTION_ACCESS_MASK |
 				    EXPORT_OPTION_PROTOCOLS |
 				    EXPORT_OPTION_TRANSPORTS |
-				    EXPORT_OPTION_AUTH_TYPES;
+				    EXPORT_OPTION_AUTH_TYPES |
+				    EXPORT_OPTION_PRIVILEGED_PORT;
 
 	export->options = EXPORT_OPTION_USE_COOKIE_VERIFIER;
 	export->options_set = EXPORT_OPTION_FSID_SET |

@@ -72,8 +72,6 @@ struct nfs_request_lookahead {
 #define XDR_BYTES_MAXLEN_IO (64*1024*1024)
 #define XDR_STRING_MAXLEN (8*1024)
 
-void socket_setoptions(int);
-
 typedef struct sockaddr_storage sockaddr_t;
 
 #define SOCK_NAME_MAX 128
@@ -356,4 +354,5 @@ extern int ipstring_to_sockaddr(const char *, sockaddr_t *);
 CLIENT *gsh_clnt_create(char *, unsigned long, unsigned long, char *);
 void gsh_clnt_destroy(CLIENT *);
 
+extern tirpc_pkg_params ntirpc_pp;
 #endif /* GSH_RPC_H */

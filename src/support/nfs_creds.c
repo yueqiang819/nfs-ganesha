@@ -75,7 +75,8 @@ uint32_t root_op_export_set = EXPORT_OPTION_SQUASH_TYPES |
 
 void squash_setattr(struct attrlist *attr)
 {
-	if (attr->mask & ATTR_OWNER) {
+	if (attr->mask & ATTR_OWNER &&
+	    op_ctx->export_perms->anonymous_uid != 0) {
 		if (op_ctx->export_perms->options &
 		    EXPORT_OPTION_ALL_ANONYMOUS)
 			attr->owner = op_ctx->export_perms->anonymous_uid;
@@ -85,7 +86,8 @@ void squash_setattr(struct attrlist *attr)
 			attr->owner = op_ctx->export_perms->anonymous_uid;
 	}
 
-	if (attr->mask & ATTR_GROUP) {
+	if (attr->mask & ATTR_GROUP &&
+	    op_ctx->export_perms->anonymous_gid != 0) {
 		/* If all squashed, then always squash the owner_group.
 		 *
 		 * If root squashed, then squash owner_group if
@@ -114,6 +116,14 @@ void squash_setattr(struct attrlist *attr)
 bool nfs_compare_clientcred(nfs_client_cred_t *cred1,
 			    nfs_client_cred_t *cred2)
 {
+#ifdef _HAVE_GSSAPI
+	gss_name_t cred1_cred_name;
+	gss_name_t cred2_cred_name;
+	OM_uint32 maj_stat, min_stat;
+	int status;
+#endif
+
+
 	if (cred1 == NULL)
 		return false;
 	if (cred2 == NULL)
@@ -131,6 +141,35 @@ bool nfs_compare_clientcred(nfs_client_cred_t *cred1,
 		    cred2->auth_union.auth_unix.aup_gid)
 			return false;
 		break;
+
+#ifdef _HAVE_GSSAPI
+	case RPCSEC_GSS:
+		maj_stat = gss_inquire_context(&min_stat,
+			cred1->auth_union.auth_gss.gss_context_id,
+			&cred1_cred_name, NULL, NULL, NULL, NULL, NULL, NULL);
+
+		if (maj_stat != GSS_S_COMPLETE &&
+		    maj_stat != GSS_S_CONTEXT_EXPIRED)
+			return false;
+
+		 maj_stat = gss_inquire_context(&min_stat,
+			cred2->auth_union.auth_gss.gss_context_id,
+			&cred2_cred_name, NULL, NULL, NULL, NULL, NULL, NULL);
+
+		if (maj_stat != GSS_S_COMPLETE &&
+		    maj_stat != GSS_S_CONTEXT_EXPIRED)
+			return false;
+
+		maj_stat = gss_compare_name(&min_stat, cred1_cred_name,
+					    cred2_cred_name, &status);
+		if (maj_stat != GSS_S_COMPLETE)
+			return false;
+
+		if (status == 0)
+			return false;
+
+		break;
+#endif
 
 	default:
 		if (memcmp

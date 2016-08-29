@@ -195,7 +195,7 @@ int display_sockaddr(struct display_buffer *dspbuf, sockaddr_t *addr)
 {
 	const char *name = NULL;
 	char ipname[SOCK_NAME_MAX];
-	int port;
+	int port = 0;
 	int b_left = display_start(dspbuf);
 
 	if (b_left <= 0)
@@ -386,28 +386,6 @@ int get_port(sockaddr_t *addr)
 		return -1;
 	}
 }
-
-void socket_setoptions(int socketFd)
-{
-	unsigned int SbMax = (1 << 30);	/* 1GB */
-
-	while (SbMax > 1048576) {
-		if ((setsockopt
-		     (socketFd, SOL_SOCKET, SO_SNDBUF, (char *)&SbMax,
-		      sizeof(SbMax)) < 0)
-		    ||
-		    (setsockopt
-		     (socketFd, SOL_SOCKET, SO_RCVBUF, (char *)&SbMax,
-		      sizeof(SbMax)) < 0)) {
-			SbMax >>= 1;	/* SbMax = SbMax/2 */
-			continue;
-		}
-
-		break;
-	}
-}
-
-#define SIZE_AI_ADDR sizeof(struct sockaddr)
 
 int ipstring_to_sockaddr(const char *str, sockaddr_t *addr)
 {
