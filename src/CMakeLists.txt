@@ -17,28 +17,34 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 project(nfs-ganesha C CXX)
 # Project versioning
 set(GANESHA_MAJOR_VERSION 2)
-set(GANESHA_MINOR_VERSION 4)
+set(GANESHA_MINOR_VERSION 5)
+
+IF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
+set(GANESHA_BUILD_RELEASE 1)
+ELSE()
+set(GANESHA_BUILD_RELEASE 0)
+ENDIF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 
 # needs to come after project()
 IF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQUAL "/usr")
 	SET(CMAKE_INSTALL_PREFIX "/usr" CACHE PATH "Install prefix for common files" FORCE)
 	message(STATUS "override default CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
-	SET(SYSCONFDIR "/etc" CACHE PATH "Install prefix for common files" FORCE)
-	SET(SYSSTATEDIR "/var" CACHE PATH "Install prefix for common files" FORCE)
+	SET(SYSCONFDIR "/etc" CACHE PATH "Install prefix for common files")
+	SET(SYSSTATEDIR "/var" CACHE PATH "Install prefix for common files")
 ELSE()
 	message(STATUS "was set CMAKE_INSTALL_PREFIX = ${CMAKE_INSTALL_PREFIX}")
-	SET(SYSCONFDIR "${CMAKE_INSTALL_PREFIX}/etc" CACHE PATH "Install prefix for common files" FORCE)
-	SET(SYSSTATEDIR "${CMAKE_INSTALL_PREFIX}/var" CACHE PATH "Install prefix for common files" FORCE)
+	SET(SYSCONFDIR "${CMAKE_INSTALL_PREFIX}/etc" CACHE PATH "Install prefix for common files")
+	SET(SYSSTATEDIR "${CMAKE_INSTALL_PREFIX}/var" CACHE PATH "Install prefix for common files")
 ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQUAL "/usr")
 # Patch level is always ".0" for mainline (master).  It is blank for development.
 # When starting a stable maintenance branch, this becomes ".N"
 # where N is monotonically increasing starting at 1. Remember to include the "." !!
-set(GANESHA_PATCH_LEVEL .1)
+set(GANESHA_PATCH_LEVEL )
 
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
 # If used, it is always of the form "-whateveryouwant"
-set(GANESHA_EXTRA_VERSION)
+set(GANESHA_EXTRA_VERSION -dev-7)
 
 set(GANESHA_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL}${GANESHA_EXTRA_VERSION})
 set(GANESHA_BASE_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL})
@@ -100,6 +106,7 @@ EXECUTE_PROCESS( COMMAND hostname
   )
 
 find_package(Toolchain REQUIRED)
+find_package(Sanitizers)
 
 # Add maintainer mode for (mainly) strict builds
 include(${CMAKE_SOURCE_DIR}/cmake/maintainer_mode.cmake)
@@ -224,6 +231,7 @@ option(DEBUG_SAL "enable debugging of SAL by keeping list of all locks, stateids
 option(_VALGRIND_MEMCHECK "Initialize buffers passed to GPFS ioctl that valgrind doesn't understand" OFF)
 option(ENABLE_LOCKTRACE "Enable lock trace" OFF)
 option(PROXY_HANDLE_MAPPING "enable NFSv3 handle mapping for PROXY FSAL" OFF)
+option(ENABLE_LOCKTRACE "Turn on lock debug tracing" ON)
 
 # Debug symbols (-g) build flag
 option(DEBUG_SYMS "include debug symbols to binaries (-g option)" OFF)
@@ -518,7 +526,7 @@ if(USE_FSAL_GLUSTER)
   IF(GLUSTER_PREFIX)
     set(ENV{PKG_CONFIG_PATH} "${PKG_CONFIG_PATH}:${GLUSTER_PREFIX}/lib/pkgconfig")
   ENDIF(GLUSTER_PREFIX)
-  pkg_check_modules(GFAPI glusterfs-api>=7.3.8)
+  pkg_check_modules(GFAPI glusterfs-api>=7.3.8.6)
   if(NOT GFAPI_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT PACKAGE: Cannot find GLUSTER GFAPI runtime. Disabling GLUSTER fsal build")
@@ -584,7 +592,7 @@ endif(USE_FSAL_RGW)
 
 if(USE_FSAL_XFS)
   if(EXISTS /lib/libhandle.so)
-    check_library_exists(handle "open_by_handle" "lib" HAVE_XFS_LIB)
+    check_library_exists(handle "open_by_handle" "/./lib" HAVE_XFS_LIB)
     if(HAVE_XFS_LIB)
       set(PATH_LIBHANDLE "/lib/libhandle.so" CACHE INTERNAL "debian stretch and ubuntu xenial hack")
     endif(HAVE_XFS_LIB)
@@ -862,9 +870,9 @@ if(USE_9P_RDMA)
   link_directories (${MOOSHIKA_LIBRARY_DIRS})
 endif(USE_9P_RDMA)
 
-set(NTIRPC_VERSION 1.4.0)
+set(NTIRPC_MIN_VERSION 1.4.0)
 if (USE_SYSTEM_NTIRPC)
-  find_package(NTIRPC ${NTIRPC_VERSION} REQUIRED)
+  find_package(NTIRPC ${NTIRPC_MIN_VERSION} REQUIRED)
 else (USE_SYSTEM_NTIRPC)
   # Set options for submodule
   option(USE_RPC_RDMA "Use RDMA" ${USE_NFS_RDMA})
@@ -950,6 +958,7 @@ message(STATUS "USE_FSAL_CEPH = ${USE_FSAL_CEPH}")
 message(STATUS "USE_FSAL_CEPH_MKNOD = ${USE_FSAL_CEPH_MKNOD}")
 message(STATUS "USE_FSAL_CEPH_SETLK = ${USE_FSAL_CEPH_SETLK}")
 message(STATUS "USE_FSAL_CEPH_LL_LOOKUP_ROOT = ${USE_FSAL_CEPH_LL_LOOKUP_ROOT}")
+message(STATUS "USE_FSAL_CEPH_STATX = ${USE_FSAL_CEPH_STATX}")
 message(STATUS "USE_FSAL_RGW = ${USE_FSAL_RGW}")
 message(STATUS "USE_FSAL_XFS = ${USE_FSAL_XFS}")
 message(STATUS "USE_FSAL_PANFS = ${USE_FSAL_PANFS}")

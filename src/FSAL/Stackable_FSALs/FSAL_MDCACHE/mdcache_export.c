@@ -48,6 +48,7 @@
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/fsal_config.h"
 #include "mdcache_lru.h"
+#include "mdcache_hash.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
 
@@ -82,18 +83,22 @@ static const char *mdcache_get_name(struct fsal_export *exp_hdl)
  * Clean up all the cache entries on this export.
  *
  * @param[in] exp_hdl	Export to unexport
+ * @param[in] root_obj	Root object for export
  */
-static void mdcache_unexport(struct fsal_export *exp_hdl)
+static void mdcache_unexport(struct fsal_export *exp_hdl,
+			     struct fsal_obj_handle *root_obj)
 {
 	struct mdcache_fsal_export *exp = mdc_export(exp_hdl);
 	struct fsal_export *sub_export = exp->export.sub_export;
+	mdcache_entry_t *root_entry = container_of(root_obj, mdcache_entry_t,
+						   obj_handle);
 	mdcache_entry_t *entry;
 	struct entry_export_map *expmap;
 	fsal_status_t status;
 
 	/* First unexport for the sub-FSAL */
 	subcall_raw(exp,
-		sub_export->exp_ops.unexport(sub_export)
+		sub_export->exp_ops.unexport(sub_export, root_entry->sub_handle)
 	);
 
 	/* Next, clean up our cache entries on the export */
@@ -151,6 +156,9 @@ static void mdcache_unexport(struct fsal_export *exp_hdl)
 		/* Release above ref */
 		mdcache_put(entry);
 	};
+
+	/* Unhash the root object */
+	assert(!cih_remove_checked(root_entry));
 }
 
 /**
@@ -732,21 +740,26 @@ static struct state_t *mdcache_alloc_state(struct fsal_export *exp_hdl,
 							related_state)
 	       );
 
+	/* Replace stored export with ours so stacking works */
+	state->state_exp = exp_hdl;
+
 	return state;
 }
 
 /**
  * @brief Free state_t structure
  *
+ * @param[in] exp_hdl	Export state is associated with
  * @param[in] state	State to free
  */
-static void mdcache_free_state(struct state_t *state)
+static void mdcache_free_state(struct fsal_export *exp_hdl,
+			       struct state_t *state)
 {
-	struct mdcache_fsal_export *exp = mdc_export(state->state_exp);
+	struct mdcache_fsal_export *exp = mdc_export(exp_hdl);
 	struct fsal_export *sub_export = exp->export.sub_export;
 
 	subcall_raw(exp,
-		sub_export->exp_ops.free_state(state)
+		sub_export->exp_ops.free_state(sub_export, state)
 	       );
 }
 
@@ -789,6 +802,7 @@ void mdcache_export_ops_init(struct export_ops *ops)
 	ops->free_state = mdcache_free_state;
 }
 
+#if 0
 struct mdcache_fsal_args {
 	struct subfsal_args subfsal;
 };
@@ -815,6 +829,7 @@ static struct config_block export_param = {
 	.blk_desc.u.blk.params = export_params,
 	.blk_desc.u.blk.commit = noop_conf_commit
 };
+#endif
 
 /**
  * @brief Initialize a MDCACHE export
@@ -864,74 +879,6 @@ mdc_init_export(struct fsal_module *fsal_hdl,
 	op_ctx->fsal_export = &myself->export;
 	op_ctx->fsal_module = fsal_hdl;
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/**
- * @brief Create an export for MDCACHE
- *
- * Create the stacked export for MDCACHE to allow metadata caching on another
- * export.  Unlike other Stackable FSALs, this one is created @b after the FSAL
- * underneath.  It assumes the sub-FSAL's export is already created and
- * available via the @e fsal_export member of @link op_ctx @endlink, the same
- * way that this export is returned.
- *
- * There is currently no config; FSALs that want caching should call @ref
- * mdcache_export_init
- *
- * @param[in] fsal_hdl		FSAL module handle
- * @param[in] parse_node	Config node for export
- * @param[out] err_type		Parse errors
- * @param[in] up_ops		Upcall ops for export
- * @return FSAL status
- */
-fsal_status_t
-mdcache_fsal_create_export(struct fsal_module *fsal_hdl, void *parse_node,
-			   struct config_error_type *err_type,
-			   const struct fsal_up_vector *super_up_ops)
-{
-	fsal_status_t status = {0, 0};
-	struct fsal_module *sub_fsal;
-	struct mdcache_fsal_args mdcache_fsal;
-	struct fsal_up_vector my_up_ops;
-	int retval;
-
-	/* process the sub-FSAL block to get the name of the fsal
-	 * underneath us.
-	 */
-	retval = load_config_from_node(parse_node,
-				       &export_param,
-				       &mdcache_fsal,
-				       true,
-				       err_type);
-	if (retval != 0)
-		return fsalstat(ERR_FSAL_INVAL, 0);
-	sub_fsal = lookup_fsal(mdcache_fsal.subfsal.name);
-	if (sub_fsal == NULL) {
-		LogMajor(COMPONENT_FSAL, "failed to lookup for FSAL %s",
-			 mdcache_fsal.subfsal.name);
-		return fsalstat(ERR_FSAL_INVAL, EINVAL);
-	}
-
-	mdcache_export_up_ops_init(&my_up_ops, super_up_ops);
-
-	status = sub_fsal->m_ops.create_export(sub_fsal,
-						 parse_node,
-						 err_type,
-						 &my_up_ops);
-	if (FSAL_IS_ERROR(status)) {
-		LogMajor(COMPONENT_FSAL,
-			 "Failed to call create_export on underlying FSAL %s",
-			 mdcache_fsal.subfsal.name);
-		fsal_put(sub_fsal);
-		return status;
-	}
-
-	/* Wrap sub export with MDCACHE export */
-	status = mdc_init_export(fsal_hdl, &my_up_ops, super_up_ops);
-	/* mdc_init_export took a ref on sub_fsal */
-	fsal_put(sub_fsal);
-
-	return status;
 }
 
 /** @} */

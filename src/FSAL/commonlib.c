@@ -177,7 +177,7 @@ void fsal_obj_handle_init(struct fsal_obj_handle *obj, struct fsal_export *exp,
 		&attrs,
 		PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
 #endif
-	PTHREAD_RWLOCK_init(&obj->lock, &attrs);
+	PTHREAD_RWLOCK_init(&obj->obj_lock, &attrs);
 
 	PTHREAD_RWLOCK_wrlock(&obj->fsal->lock);
 	glist_add(&obj->fsal->handles, &obj->handles);
@@ -189,7 +189,7 @@ void fsal_obj_handle_fini(struct fsal_obj_handle *obj)
 	PTHREAD_RWLOCK_wrlock(&obj->fsal->lock);
 	glist_del(&obj->handles);
 	PTHREAD_RWLOCK_unlock(&obj->fsal->lock);
-	PTHREAD_RWLOCK_destroy(&obj->lock);
+	PTHREAD_RWLOCK_destroy(&obj->obj_lock);
 	memset(&obj->obj_ops, 0, sizeof(obj->obj_ops));	/* poison myself */
 	obj->fsal = NULL;
 }
@@ -1318,7 +1318,7 @@ int resolve_posix_filesystem(const char *path,
 	/* second attempt to resolve file system with force option in case of
 	 * ganesha isn't during startup.
 	 */
-	if (!init_complete || retval != ENOENT)
+	if (!init_complete || retval != EAGAIN)
 		return retval;
 
 	LogDebug(COMPONENT_FSAL,
@@ -1336,6 +1336,8 @@ int resolve_posix_filesystem(const char *path,
 					 claim, unclaim, root_fs);
 
 	if (retval != 0) {
+		if (retval == EAGAIN)
+			retval = ENOENT;
 		LogCrit(COMPONENT_FSAL,
 			"claim_posix_filesystems(%s) returned %s (%d)",
 			path, strerror(retval), retval);
@@ -1576,7 +1578,7 @@ int claim_posix_filesystems(const char *path,
 
 	/* Check if we found a filesystem */
 	if (root == NULL) {
-		retval = ENOENT;
+		retval = EAGAIN;
 		goto out;
 	}
 
@@ -2427,7 +2429,7 @@ fsal_status_t fsal_reopen_obj(struct fsal_obj_handle *obj_hdl,
 	 * We only take a read lock because we are not changing the
 	 * state of the file descriptor.
 	 */
-	PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 
 	if (check_share) {
 		/* Note we will check again if we drop and re-acquire the lock
@@ -2436,7 +2438,7 @@ fsal_status_t fsal_reopen_obj(struct fsal_obj_handle *obj_hdl,
 		status = check_share_conflict(share, openflags, bypass);
 
 		if (FSAL_IS_ERROR(status)) {
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 			LogDebug(COMPONENT_FSAL,
 				 "check_share_conflict failed with %s",
 				 msg_fsal_err(status.major));
@@ -2465,7 +2467,7 @@ again:
 	if (not_open_usable(my_fd->openflags, openflags)) {
 
 		/* Drop the rwlock */
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		if (retried) {
 			/* This really should never occur, it could occur
@@ -2485,7 +2487,7 @@ again:
 		 * This prevents us from blocking for the duration of an
 		 * I/O request.
 		 */
-		rc = pthread_rwlock_trywrlock(&obj_hdl->lock);
+		rc = pthread_rwlock_trywrlock(&obj_hdl->obj_lock);
 		if (rc == EBUSY) {
 			/* Someone else is using the file descriptor.
 			 * Just provide a temporary file descriptor.
@@ -2494,14 +2496,15 @@ again:
 			 * operation if we needed to check.
 			 */
 			if (check_share) {
-				PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 
 				status = check_share_conflict(share,
 							      openflags,
 							      bypass);
 
 				if (FSAL_IS_ERROR(status)) {
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 					LogDebug(COMPONENT_FSAL,
 						 "check_share_conflict failed with %s",
 						 msg_fsal_err(status.major));
@@ -2514,7 +2517,8 @@ again:
 
 			if (FSAL_IS_ERROR(status)) {
 				if (check_share)
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 				*has_lock = false;
 				return status;
 			}
@@ -2537,7 +2541,7 @@ again:
 			status = check_share_conflict(share, openflags, bypass);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "check_share_conflict failed with %s",
 					 msg_fsal_err(status.major));
@@ -2560,7 +2564,8 @@ again:
 				status = close_func(obj_hdl, my_fd);
 
 				if (FSAL_IS_ERROR(status)) {
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 					LogDebug(COMPONENT_FSAL,
 						 "close_func failed with %s",
 						 msg_fsal_err(status.major));
@@ -2581,7 +2586,7 @@ again:
 			status = open_func(obj_hdl, try_openflags, my_fd);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "open_func failed with %s",
 					 msg_fsal_err(status.major));
@@ -2597,15 +2602,15 @@ again:
 		 * Since we dropped the lock, we need to verify mode is still'
 		 * good after we re-aquire the read lock, thus the retry.
 		 */
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
-		PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
+		PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 		retried = true;
 
 		if (check_share) {
 			status = check_share_conflict(share, openflags, bypass);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "check_share_conflict failed with %s",
 					 msg_fsal_err(status.major));
@@ -2644,8 +2649,7 @@ again:
  * @param[in]     openflags      Mode for open
  * @param[in]     open_func      Function to open a file descriptor
  * @param[in]     close_func     Function to close a file descriptor
- * @param[out]    has_lock       Indicates that obj_hdl->lock is held read
- * @param[out]    need_fsync     Indicates that the file will need fsync
+ * @param[out]    has_lock       Indicates that obj_hdl->obj_lock is held read
  * @param[out]    closefd        Indicates that file descriptor must be closed
  * @param[in]     open_for_locks Indicates file is open for locks
  *
@@ -2662,7 +2666,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			   fsal_open_func open_func,
 			   fsal_close_func close_func,
 			   bool *has_lock,
-			   bool *need_fsync,
 			   bool *closefd,
 			   bool open_for_locks)
 {
@@ -2687,7 +2690,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 		LogFullDebug(COMPONENT_FSAL, "Use state_fd %p", state_fd);
 		if (out_fd)
 			*out_fd = state_fd;
-		*need_fsync = (openflags & FSAL_O_SYNC) != 0;
 		*has_lock = false;
 		return status;
 	}
@@ -2722,7 +2724,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			LogFullDebug(COMPONENT_FSAL,
 				     "Opened state_fd %p", state_fd);
 			*out_fd = state_fd;
-			*need_fsync = false;
 		}
 
 		*has_lock = false;
@@ -2753,7 +2754,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			if (out_fd)
 				*out_fd = related_fd;
 
-			*need_fsync = (openflags & FSAL_O_SYNC) != 0;
 			*has_lock = false;
 			return status;
 		}
@@ -2765,11 +2765,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 	LogFullDebug(COMPONENT_FSAL,
 		     "Use global fd openflags = %x",
 		     openflags);
-
-	/* We will take the object handle lock in vfs_reopen_obj.
-	 * And we won't have to fsync.
-	 */
-	*need_fsync = false;
 
 	/* Make sure global is open as necessary otherwise return a
 	 * temporary file descriptor. Check share reservation if not

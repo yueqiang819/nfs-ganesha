@@ -261,7 +261,8 @@ static const char *get_name(struct fsal_export *exp_hdl)
  * Nothing to do in the default case
  */
 
-static void export_unexport(struct fsal_export *exp_hdl)
+static void export_unexport(struct fsal_export *exp_hdl,
+			    struct fsal_obj_handle *root_obj)
 {
 	/* return */
 }
@@ -581,7 +582,7 @@ struct state_t *alloc_state(struct fsal_export *exp_hdl,
  * @returns NULL on failure otherwise a state structure.
  */
 
-void free_state(struct state_t *state)
+void free_state(struct fsal_export *exp_hdl, struct state_t *state)
 {
 	gsh_free(state);
 }
@@ -753,7 +754,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 
 static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 			      const char *name, object_file_type_t nodetype,
-			      fsal_dev_t *dev, struct attrlist *attrib,
+			      struct attrlist *attrib,
 			      struct fsal_obj_handle **handle,
 			      struct attrlist *attrs_out)
 {

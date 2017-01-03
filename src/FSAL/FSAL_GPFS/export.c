@@ -371,7 +371,7 @@ static fsal_status_t gpfs_extract_handle(struct fsal_export *exp_hdl,
 					 int flags)
 {
 	struct gpfs_file_handle *hdl;
-	size_t fh_size = 0;
+	size_t fh_size;
 
 	/* sanity checks */
 	if (!fh_desc || !fh_desc->addr)
@@ -400,34 +400,18 @@ static fsal_status_t gpfs_extract_handle(struct fsal_export *exp_hdl,
 	   hdl->handle_key_size, hdl->handle_fsid[0], hdl->handle_fsid[1],
 	   fh_size);
 
-	if (fh_desc->len != fh_size) {
+	/* Some older file handles include additional 16 bytes in fh_desc->len.
+	 * Honor those as well.
+	 */
+	if (fh_desc->len != fh_size &&
+	    fh_desc->len != fh_size + 16) {
 		LogMajor(COMPONENT_FSAL,
 			 "Size mismatch for handle.  should be %zu, got %zu",
 			 fh_size, fh_desc->len);
 		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
 	}
-	fh_desc->len = hdl->handle_key_size;	/* pass back the key size */
+	fh_desc->len = hdl->handle_size;	/* pass back the size */
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/** \var GPFS_write_verifier
- *  @brief NFS V4 write verifier
- */
-verifier4 GPFS_write_verifier;
-
-static void gpfs_verifier(struct fsal_export *exp_hdl,
-			  struct gsh_buffdesc *verf_desc)
-{
-	memcpy(verf_desc->addr, &GPFS_write_verifier, verf_desc->len);
-}
-
-/**
- *  @brief set the global GPFS_write_verfier according to \a verifier
- *  @param verfier verifier4 type
- */
-void set_gpfs_verifier(verifier4 *verifier)
-{
-	memcpy(&GPFS_write_verifier, verifier, sizeof(verifier4));
 }
 
 /**
@@ -455,7 +439,6 @@ void gpfs_export_ops_init(struct export_ops *ops)
 	ops->fs_xattr_access_rights = fs_xattr_access_rights;
 	ops->get_quota = get_quota;
 	ops->set_quota = set_quota;
-	ops->get_write_verifier = gpfs_verifier;
 	ops->alloc_state = gpfs_alloc_state;
 }
 
@@ -757,10 +740,8 @@ fsal_status_t gpfs_create_export(struct fsal_module *fsal_hdl,
 	/* The status code to return */
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	struct gpfs_fsal_export *myself;
-	struct readlink_arg varg;
 	struct gpfs_filesystem *gpfs_fs;
 	gpfsfsal_xstat_t buffxstat;
-	int rc;
 
 	myself = gsh_calloc(1, sizeof(struct gpfs_fsal_export));
 
@@ -784,12 +765,7 @@ fsal_status_t gpfs_create_export(struct fsal_module *fsal_hdl,
 	myself->export.fsal = fsal_hdl;
 	op_ctx->fsal_export = &myself->export;
 
-	/* Stack MDCACHE on top */
-	status = mdcache_export_init(up_ops, &myself->export.up_ops);
-	if (FSAL_IS_ERROR(status)) {
-		LogDebug(COMPONENT_FSAL, "MDCACHE creation failed for GPFS");
-		goto detach;
-	}
+	myself->export.up_ops = up_ops;
 
 	status.minor = resolve_posix_filesystem(op_ctx->ctx_export->fullpath,
 						fsal_hdl, &myself->export,
@@ -808,19 +784,12 @@ fsal_status_t gpfs_create_export(struct fsal_module *fsal_hdl,
 	gpfs_fs = myself->root_fs->private_data;
 	gpfs_fs->root_fd = open_dir_by_path_walk(-1,
 			   op_ctx->ctx_export->fullpath, &buffxstat.buffstat);
-	varg.fd = gpfs_fs->root_fd;
-	varg.buffer = (char *)&GPFS_write_verifier;
-	rc = gpfs_ganesha(OPENHANDLE_GET_VERIFIER, &varg);
-	if (rc != 0)
-		LogCrit(COMPONENT_FSAL,
-		    "OPENHANDLE_GET_VERIFIER failed with rc = %d", rc);
 
 	/* if the nodeid has not been obtained, get it now */
 	if (!g_nodeid) {
 		struct grace_period_arg gpa;
 		int nodeid;
 
-		gpfs_fs = myself->root_fs->private_data;
 		gpa.mountdirfd = gpfs_fs->root_fd;
 
 		nodeid = gpfs_ganesha(OPENHANDLE_GET_NODEID, &gpa);
@@ -871,7 +840,6 @@ fsal_status_t gpfs_create_export(struct fsal_module *fsal_hdl,
 
 uninit:
 	mdcache_export_uninit();
-detach:
 	fsal_detach_export(fsal_hdl, &myself->export.exports);
 errout:
 	free_export_ops(&myself->export);

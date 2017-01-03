@@ -16,7 +16,8 @@ SET(fsalnull_LIB_SRCS
    export.c
 )
 
-add_library(fsalnull SHARED ${fsalnull_LIB_SRCS})
+add_library(fsalnull MODULE ${fsalnull_LIB_SRCS})
+add_sanitizers(fsalnull)
 
 target_link_libraries(fsalnull
   gos

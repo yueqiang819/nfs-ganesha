@@ -46,6 +46,7 @@
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/fsal_config.h"
 #include "internal.h"
+#include "statx_compat.h"
 
 /**
  * @brief Clean up an export
@@ -108,7 +109,7 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	/* FSAL status structure */
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	/* The buffer in which to store stat info */
-	struct stat st;
+	struct ceph_statx stx;
 	/* Return code from Ceph */
 	int rc;
 	/* Find the actual path in the supplied path */
@@ -130,21 +131,35 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 
 	*pub_handle = NULL;
 
+	/*
+	 * sanity check: ensure that this is the right export. realpath
+	 * must be a superset of the export fullpath, or the string
+	 * handling will be broken.
+	 */
+	if (strstr(realpath, op_ctx->ctx_export->fullpath) != realpath) {
+		status.major = ERR_FSAL_SERVERFAULT;
+		return status;
+	}
+
+	/* Advance past the export's fullpath */
+	realpath += strlen(op_ctx->ctx_export->fullpath);
+
+	/* special case the root */
 	if (strcmp(realpath, "/") == 0) {
 		assert(export->root);
 		*pub_handle = &export->root->handle;
 		return status;
 	}
 
-	rc = ceph_ll_walk(export->cmount, realpath, &i, &st);
+	rc = fsal_ceph_ll_walk(export->cmount, realpath, &i, &stx,
+				!!attrs_out, op_ctx->creds);
 	if (rc < 0)
 		return ceph2fsal_error(rc);
 
-	construct_handle(&st, i, export, &handle);
+	construct_handle(&stx, i, export, &handle);
 
-	if (attrs_out != NULL) {
-		posix2fsal_attributes(&st, attrs_out);
-	}
+	if (attrs_out != NULL)
+		ceph2fsal_attributes(&stx, attrs_out);
 
 	*pub_handle = &handle->handle;
 	return status;
@@ -206,7 +221,7 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 	/* Ceph return code */
 	int rc = 0;
 	/* Stat buffer */
-	struct stat st;
+	struct ceph_statx stx;
 	/* Handle to be created */
 	struct handle *handle = NULL;
 	/* Inode pointer */
@@ -225,15 +240,16 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 
 	/* The ceph_ll_connectable_m should have populated libceph's
 	   cache with all this anyway */
-	rc = ceph_ll_getattr(export->cmount, i, &st, 0, 0);
+	rc = fsal_ceph_ll_getattr(export->cmount, i, &stx,
+		attrs_out ? CEPH_STATX_ATTR_MASK : CEPH_STATX_HANDLE_MASK,
+		op_ctx->creds);
 	if (rc < 0)
 		return ceph2fsal_error(rc);
 
-	construct_handle(&st, i, export, &handle);
+	construct_handle(&stx, i, export, &handle);
 
-	if (attrs_out != NULL) {
-		posix2fsal_attributes(&st, attrs_out);
-	}
+	if (attrs_out != NULL)
+		ceph2fsal_attributes(&stx, attrs_out);
 
 	*pub_handle = &handle->handle;
 	return status;

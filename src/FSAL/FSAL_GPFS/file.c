@@ -135,11 +135,11 @@ fsal_status_t gpfs_merge(struct fsal_obj_handle *orig_hdl,
 				    obj_handle);
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&orig_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&orig_hdl->obj_lock);
 
 		status = merge_share(&orig->u.file.share, &dupe->u.file.share);
 
-		PTHREAD_RWLOCK_unlock(&orig_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&orig_hdl->obj_lock);
 	}
 
 	return status;
@@ -293,7 +293,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 			*/
 
 			/* This can block over an I/O operation. */
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 			/* Check share reservation conflicts. */
 			status = check_share_conflict(&myself->u.file.share,
@@ -301,7 +301,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 						      false);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				return status;
 			}
 
@@ -312,7 +312,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 					      FSAL_O_CLOSED,
 					      openflags);
 
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 			fd = &my_fd->fd;
 			my_fd->openflags = openflags;
@@ -322,7 +322,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 			 */
 			fd = &myself->u.file.fd.fd;
 			myself->u.file.fd.openflags = openflags;
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 		}
 		status = GPFSFSAL_open(obj_hdl, op_ctx, posix_flags, fd, false);
 		if (FSAL_IS_ERROR(status)) {
@@ -330,7 +330,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 				/* Release the lock taken above, and return
 				 * since there is nothing to undo.
 				 */
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				return status;
 			}
 			/* Error - need to release the share */
@@ -363,7 +363,7 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 			 * status. If success, we haven't done any permission
 			 * check so ask the caller to do so.
 			 */
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 			*caller_perm_check = !FSAL_IS_ERROR(status);
 			return status;
 		}
@@ -386,13 +386,13 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 		 * and undo the update of the share counters.
 		 * This can block over an I/O operation.
 		 */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->u.file.share,
 				      openflags,
 				      FSAL_O_CLOSED);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		return status;
 	}
@@ -546,14 +546,14 @@ fsal_status_t gpfs_open2(struct fsal_obj_handle *obj_hdl,
 		 */
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&(*new_obj)->lock);
+		PTHREAD_RWLOCK_wrlock(&(*new_obj)->obj_lock);
 
 		/* Take the share reservation now by updating the counters. */
 		update_share_counters(&hdl->u.file.share,
 				      FSAL_O_CLOSED,
 				      openflags);
 
-		PTHREAD_RWLOCK_unlock(&(*new_obj)->lock);
+		PTHREAD_RWLOCK_unlock(&(*new_obj)->obj_lock);
 	}
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
@@ -748,7 +748,7 @@ fsal_status_t gpfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	}
 
 	/* This can block over an I/O operation. */
-	PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 	old_openflags = my_share_fd->openflags;
 
@@ -756,7 +756,7 @@ fsal_status_t gpfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	status = check_share_conflict(&myself->u.file.share, openflags, false);
 
 	if (FSAL_IS_ERROR(status)) {
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		return status;
 	}
@@ -765,7 +765,7 @@ fsal_status_t gpfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	 */
 	update_share_counters(&myself->u.file.share, old_openflags, openflags);
 
-	PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	fsal2posix_openflags(openflags, &posix_flags);
 
@@ -781,13 +781,13 @@ fsal_status_t gpfs_reopen2(struct fsal_obj_handle *obj_hdl,
 		/* We had a failure on open - we need to revert the share.
 		 * This can block over an I/O operation.
 		 */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->u.file.share,
 				      openflags,
 				      old_openflags);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 	}
 	return status;
 }
@@ -798,7 +798,6 @@ fsal_status_t find_fd(int *fd,
 		      struct state_t *state,
 		      fsal_openflags_t openflags,
 		      bool *has_lock,
-		      bool *need_fsync,
 		      bool *closefd,
 		      bool open_for_locks)
 {
@@ -837,8 +836,7 @@ fsal_status_t find_fd(int *fd,
 				      &myself->u.file.share,
 				      bypass, state, openflags,
 				      gpfs_open_func, gpfs_close_func,
-				      has_lock, need_fsync,
-				      closefd, open_for_locks);
+				      has_lock, closefd, open_for_locks);
 
 		*fd = out_fd->fd;
 		return status;
@@ -905,7 +903,6 @@ fsal_status_t gpfs_read2(struct fsal_obj_handle *obj_hdl,
 	int my_fd = -1;
 	fsal_status_t status;
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	struct gpfs_filesystem *gpfs_fs;
 
@@ -920,7 +917,7 @@ fsal_status_t gpfs_read2(struct fsal_obj_handle *obj_hdl,
 
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, FSAL_O_READ,
-			 &has_lock, &need_fsync, &closefd, false);
+			 &has_lock, &closefd, false);
 
 	if (FSAL_IS_ERROR(status))
 		goto out;
@@ -940,7 +937,7 @@ fsal_status_t gpfs_read2(struct fsal_obj_handle *obj_hdl,
 		status = fsal_internal_close(my_fd, NULL, 0);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -984,7 +981,6 @@ fsal_status_t gpfs_write2(struct fsal_obj_handle *obj_hdl,
 	int retval = 0;
 	int my_fd = -1;
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	struct gpfs_filesystem *gpfs_fs;
 	fsal_openflags_t openflags = FSAL_O_WRITE;
@@ -997,12 +993,9 @@ fsal_status_t gpfs_write2(struct fsal_obj_handle *obj_hdl,
 	}
 	gpfs_fs = obj_hdl->fs->private_data;
 
-	if (*fsal_stable)
-		openflags |= FSAL_O_SYNC;
-
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, openflags,
-			 &has_lock, &need_fsync, &closefd, false);
+			 &has_lock, &closefd, false);
 
 	if (FSAL_IS_ERROR(status)) {
 		LogDebug(COMPONENT_FSAL,
@@ -1023,7 +1016,7 @@ fsal_status_t gpfs_write2(struct fsal_obj_handle *obj_hdl,
 		goto out;
 
 	/* attempt stability if we aren't using an O_SYNC fd */
-	if (need_fsync) {
+	if (!*fsal_stable) {
 		retval = fsync(my_fd);
 		if (retval == -1) {
 			retval = errno;
@@ -1037,7 +1030,7 @@ fsal_status_t gpfs_write2(struct fsal_obj_handle *obj_hdl,
 		fsal_internal_close(my_fd, NULL, 0);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -1093,7 +1086,7 @@ fsal_status_t gpfs_commit2(struct fsal_obj_handle *obj_hdl,
 		fsal_internal_close(out_fd->fd, NULL, 0);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -1130,7 +1123,6 @@ fsal_status_t gpfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 	fsal_status_t status = {0, 0};
 	int my_fd = -1;
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	bool bypass = false;
 	fsal_openflags_t openflags = FSAL_O_RDWR;
@@ -1198,7 +1190,7 @@ fsal_status_t gpfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, openflags,
-			      &has_lock, &need_fsync, &closefd, false);
+			      &has_lock, &closefd, false);
 
 	if (FSAL_IS_ERROR(status)) {
 		LogCrit(COMPONENT_FSAL, "Unable to find fd for lock operation");
@@ -1212,7 +1204,7 @@ fsal_status_t gpfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 		status = fsal_internal_close(my_fd, NULL, 0);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -1493,8 +1485,6 @@ gpfs_commit(struct fsal_obj_handle *obj_hdl, off_t offset, size_t len)
 		return fsalstat(posix2fsal_error(retval), retval);
 	}
 
-	set_gpfs_verifier(&writeverf);
-
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -1522,8 +1512,6 @@ gpfs_commit_fd(int my_fd, struct fsal_obj_handle *obj_hdl,
 			LogFatal(COMPONENT_FSAL, "GPFS Returned EUNATCH");
 		return fsalstat(posix2fsal_error(retval), retval);
 	}
-
-	set_gpfs_verifier(&writeverf);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -1639,13 +1627,13 @@ fsal_status_t gpfs_close2(struct fsal_obj_handle *obj_hdl,
 		/* This is a share state, we must update the share counters */
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->u.file.share,
 				      my_fd->openflags,
 				      FSAL_O_CLOSED);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 	}
 	if (my_fd->fd > 0) {
 		LogFullDebug(COMPONENT_FSAL,

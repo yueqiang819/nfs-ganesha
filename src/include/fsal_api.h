@@ -670,9 +670,11 @@ struct export_ops {
  * working data that is not necessary when unexported, but not free the export
  * itself, as there are still references to it.
  *
- * @param[in] exp_hdl The export to unexport.
+ * @param[in] exp_hdl	The export to unexport.
+ * @param[in] root_obj	The root object of the export
  */
-	 void (*unexport)(struct fsal_export *exp_hdl);
+	 void (*unexport)(struct fsal_export *exp_hdl,
+			  struct fsal_obj_handle *root_obj);
 
 /**
  * @brief Finalize an export
@@ -1149,12 +1151,13 @@ struct export_ops {
 /**
  * @brief Free a state_t structure
  *
+ * @param[in] exp_hdl               Export state_t is associated with
  * @param[in] state                 state_t structure to free.
  *
  * @returns NULL on failure otherwise a state structure.
  */
 
-	void (*free_state)(struct state_t *state);
+	void (*free_state)(struct fsal_export *exp_hdl, struct state_t *state);
 };
 
 /**
@@ -1440,6 +1443,9 @@ struct fsal_obj_ops {
  * MUST include the mode attribute and SHOULD NOT include the owner or
  * group attributes if they are the same as the op_ctx->cred.
  *
+ * If the node type has rawdev info, then @a attrs_in MUST have the rawdev field
+ * set.
+ *
  * The caller is expected to invoke fsal_release_attrs to release any
  * resources held by the set attributes. The FSAL layer MAY have added an
  * inherited ACL.
@@ -1458,8 +1464,6 @@ struct fsal_obj_ops {
  * @param[in]     dir_hdl   Directory in which to create the object
  * @param[in]     name      Name of object to create
  * @param[in]     nodetype  Type of special file to create
- * @param[in]     dev       Major and minor device numbers for block or
- *                          character special
  * @param[in]     attrs_in  Attributes to set on newly created object
  * @param[out]    new_obj   Newly created object
  * @param[in,out] attrs_out Optional attributes for newly created object
@@ -1471,7 +1475,6 @@ struct fsal_obj_ops {
 	 fsal_status_t (*mknode)(struct fsal_obj_handle *dir_hdl,
 				 const char *name,
 				 object_file_type_t nodetype,
-				 fsal_dev_t *dev,
 				 struct attrlist *attrs_in,
 				 struct fsal_obj_handle **new_obj,
 				 struct attrlist *attrs_out);
@@ -2998,7 +3001,7 @@ struct fsal_obj_handle {
 	struct fsal_module *fsal;	/*< Link back to fsal module */
 	struct fsal_obj_ops obj_ops;	/*< Operations vector */
 
-	pthread_rwlock_t lock;		/*< Lock on handle */
+	pthread_rwlock_t obj_lock;		/*< Lock on handle */
 
 	/** Pointer to the cached attributes.
 	 *

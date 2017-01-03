@@ -13,7 +13,8 @@ SET(fsalrgw_LIB_SRCS
 message("RGW_INCLUDE_DIR ${RGW_INCLUDE_DIR}")
 include_directories(${RGW_INCLUDE_DIR})
 
-add_library(fsalrgw SHARED ${fsalrgw_LIB_SRCS})
+add_library(fsalrgw MODULE ${fsalrgw_LIB_SRCS})
+add_sanitizers(fsalrgw)
 
 target_link_libraries(fsalrgw ${RGW_LIBRARIES} ${SYSTEM_LIBRARIES})
 

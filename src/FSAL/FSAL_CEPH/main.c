@@ -47,6 +47,7 @@
 #include "nfs_exports.h"
 #include "export_mgr.h"
 #include "mdcache.h"
+#include "statx_compat.h"
 
 /**
  * Ceph global module object.
@@ -128,32 +129,38 @@ static fsal_status_t init_config(struct fsal_module *module_in,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-#ifdef CEPH_FS_LOOKUP_ROOT
+#ifdef USE_FSAL_CEPH_LL_LOOKUP_ROOT
 static fsal_status_t find_cephfs_root(struct ceph_mount_info *cmount,
 					Inode **pi)
 {
 	return ceph2fsal_error(ceph_ll_lookup_root(cmount, pi));
 }
-#else /* CEPH_FS_LOOKUP_ROOT */
+#else /* USE_FSAL_CEPH_LL_LOOKUP_ROOT */
 static fsal_status_t find_cephfs_root(struct ceph_mount_info *cmount,
 					Inode **pi)
 {
-	Inode *i;
-	vinodeno_t root;
+	struct stat st;
 
-	root.ino.val = CEPH_INO_ROOT;
-#ifdef CEPH_NOSNAP
-	root.snapid.val = CEPH_NOSNAP;
-#else
-	root.snapid.val = 0;
-#endif /* CEPH_NOSNAP */
-	i = ceph_ll_get_inode(cmount, root);
-	if (!i)
-		return fsalstat(ERR_FSAL_SERVERFAULT, 0);
-	*pi = i;
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	return ceph2fsal_error(ceph_ll_walk(cmount, "/", pi, &st));
 }
-#endif /* CEPH_FS_LOOKUP_ROOT */
+#endif /* USE_FSAL_CEPH_LL_LOOKUP_ROOT */
+
+static struct config_item export_params[] = {
+	CONF_ITEM_NOOP("name"),
+	CONF_ITEM_STR("user_id", 0, MAXUIDLEN, NULL, export, user_id),
+	CONF_ITEM_STR("secret_access_key", 0, MAXSECRETLEN, NULL, export,
+			secret_key),
+	CONFIG_EOL
+};
+
+static struct config_block export_param_block = {
+	.dbus_interface_name = "org.ganesha.nfsd.config.fsal.ceph-export%d",
+	.blk_desc.name = "FSAL",
+	.blk_desc.type = CONFIG_BLOCK,
+	.blk_desc.u.blk.init = noop_conf_init,
+	.blk_desc.u.blk.params = export_params,
+	.blk_desc.u.blk.commit = noop_conf_commit
+};
 
 /**
  * @brief Create a new export under this FSAL
@@ -183,8 +190,6 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 {
 	/* The status code to return */
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
-	/* A fake argument list for Ceph */
-	const char *argv[] = { "FSAL_CEPH", op_ctx->ctx_export->fullpath };
 	/* The internal export object */
 	struct export *export = gsh_calloc(1, sizeof(struct export));
 	/* The 'private' root handle */
@@ -192,7 +197,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	/* Root inode */
 	struct Inode *i = NULL;
 	/* Stat for root */
-	struct stat st;
+	struct ceph_statx stx;
 	/* Return code */
 	int rc;
 	/* Return code from Ceph calls */
@@ -203,10 +208,23 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	fsal_export_init(&export->export);
 	export_ops_init(&export->export.exp_ops);
 
+	/* get params for this export, if any */
+	if (parse_node) {
+		rc = load_config_from_node(parse_node,
+					   &export_param_block,
+					   export,
+					   true,
+					   err_type);
+		if (rc != 0) {
+			gsh_free(export);
+			return fsalstat(ERR_FSAL_INVAL, 0);
+		}
+	}
+
 	initialized = true;
 
 	/* allocates ceph_mount_info */
-	ceph_status = ceph_create(&export->cmount, NULL);
+	ceph_status = ceph_create(&export->cmount, export->user_id);
 	if (ceph_status != 0) {
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
@@ -224,16 +242,34 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		goto error;
 	}
 
-	ceph_status = ceph_conf_parse_argv(export->cmount, 2, argv);
-	if (ceph_status != 0) {
-		status.major = ERR_FSAL_SERVERFAULT;
+	if (export->secret_key) {
+		ceph_status = ceph_conf_set(export->cmount, "key",
+					    export->secret_key);
+		if (ceph_status) {
+			status.major = ERR_FSAL_INVAL;
+			LogCrit(COMPONENT_FSAL,
+				"Unable to set Ceph secret key for %s: %d",
+				op_ctx->ctx_export->fullpath, ceph_status);
+			goto error;
+		}
+	}
+
+	/*
+	 * Workaround for broken libcephfs that doesn't handle the path
+	 * given in ceph_mount properly. Should be harmless for fixed
+	 * libcephfs as well (see http://tracker.ceph.com/issues/18254).
+	 */
+	ceph_status = ceph_conf_set(export->cmount, "client_mountpoint",
+				    op_ctx->ctx_export->fullpath);
+	if (ceph_status) {
+		status.major = ERR_FSAL_INVAL;
 		LogCrit(COMPONENT_FSAL,
-			"Unable to parse Ceph configuration for %s.",
-			op_ctx->ctx_export->fullpath);
+			"Unable to set Ceph client_mountpoint for %s: %d",
+			op_ctx->ctx_export->fullpath, ceph_status);
 		goto error;
 	}
 
-	ceph_status = ceph_mount(export->cmount, NULL);
+	ceph_status = ceph_mount(export->cmount, op_ctx->ctx_export->fullpath);
 	if (ceph_status != 0) {
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
@@ -251,32 +287,26 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	}
 
 	export->export.fsal = module_in;
+	export->export.up_ops = up_ops;
 
-	LogDebug(COMPONENT_FSAL,
-		 "Ceph module export %s.",
+	LogDebug(COMPONENT_FSAL, "Ceph module export %s.",
 		 op_ctx->ctx_export->fullpath);
 
 	status = find_cephfs_root(export->cmount, &i);
 	if (FSAL_IS_ERROR(status))
 		goto error;
 
-	rc = ceph_ll_getattr(export->cmount, i, &st, 0, 0);
+	rc = fsal_ceph_ll_getattr(export->cmount, i, &stx,
+				CEPH_STATX_HANDLE_MASK, op_ctx->creds);
 	if (rc < 0) {
 		status = ceph2fsal_error(rc);
 		goto error;
 	}
 
-	construct_handle(&st, i, export, &handle);
+	construct_handle(&stx, i, export, &handle);
 
 	export->root = handle;
 	op_ctx->fsal_export = &export->export;
-
-	/* Stack MDCACHE on top */
-	status = mdcache_export_init(up_ops, &export->export.up_ops);
-	if (FSAL_IS_ERROR(status)) {
-		LogDebug(COMPONENT_FSAL, "MDCACHE creation failed for CEPH");
-		goto error;
-	}
 
 	return status;
 

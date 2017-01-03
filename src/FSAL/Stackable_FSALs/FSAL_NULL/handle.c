@@ -80,6 +80,8 @@ static struct nullfs_fsal_obj_handle *nullfs_alloc_handle(
 	result->obj_handle.fsid = sub_handle->fsid;
 	result->obj_handle.fileid = sub_handle->fileid;
 	result->obj_handle.fs = fs;
+	result->obj_handle.state_hdl = sub_handle->state_hdl;
+	result->refcnt = 1;
 
 	return result;
 }
@@ -99,7 +101,7 @@ static struct nullfs_fsal_obj_handle *nullfs_alloc_handle(
  *
  * @return An error code for the function.
  */
-static fsal_status_t nullfs_alloc_and_check_handle(
+fsal_status_t nullfs_alloc_and_check_handle(
 		struct nullfs_fsal_export *export,
 		struct fsal_obj_handle *sub_handle,
 		struct fsal_filesystem *fs,
@@ -214,7 +216,6 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 			      const char *name,
 			      object_file_type_t nodetype,
-			      fsal_dev_t *dev,
 			      struct attrlist *attrs_in,
 			      struct fsal_obj_handle **new_obj,
 			      struct attrlist *attrs_out)
@@ -236,7 +237,7 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 	/* Creating the node with a subfsal handle. */
 	op_ctx->fsal_export = export->export.sub_export;
 	fsal_status_t status = nullfs_dir->sub_handle->obj_ops.mknode(
-		nullfs_dir->sub_handle, name, nodetype, dev, attrs_in,
+		nullfs_dir->sub_handle, name, nodetype, attrs_in,
 		&sub_handle, attrs_out);
 	op_ctx->fsal_export = &export->export;
 
@@ -469,6 +470,28 @@ static fsal_status_t setattrs(struct fsal_obj_handle *obj_hdl,
 	return status;
 }
 
+static fsal_status_t nullfs_setattr2(struct fsal_obj_handle *obj_hdl,
+				     bool bypass,
+				     struct state_t *state,
+				     struct attrlist *attrs)
+{
+	struct nullfs_fsal_obj_handle *handle =
+		container_of(obj_hdl, struct nullfs_fsal_obj_handle,
+			     obj_handle);
+
+	struct nullfs_fsal_export *export =
+		container_of(op_ctx->fsal_export, struct nullfs_fsal_export,
+			     export);
+
+	/* calling subfsal method */
+	op_ctx->fsal_export = export->export.sub_export;
+	fsal_status_t status = handle->sub_handle->obj_ops.setattr2(
+		handle->sub_handle, bypass, state, attrs);
+	op_ctx->fsal_export = &export->export;
+
+	return status;
+}
+
 /* file_unlink
  * unlink the named file in the directory
  */
@@ -550,7 +573,7 @@ static void handle_to_key(struct fsal_obj_handle *obj_hdl,
 
 /*
  * release
- * release our export first so they know we are gone
+ * release our handle first so they know we are gone
  */
 
 static void release(struct fsal_obj_handle *obj_hdl)
@@ -597,6 +620,20 @@ void nullfs_handle_ops_init(struct fsal_obj_ops *ops)
 	ops->close = nullfs_close;
 	ops->handle_digest = handle_digest;
 	ops->handle_to_key = handle_to_key;
+
+	/* Multi-FD */
+	ops->open2 = nullfs_open2;
+	ops->check_verifier = nullfs_check_verifier;
+	ops->status2 = nullfs_status2;
+	ops->reopen2 = nullfs_reopen2;
+	ops->read2 = nullfs_read2;
+	ops->write2 = nullfs_write2;
+	ops->seek2 = nullfs_seek2;
+	ops->io_advise2 = nullfs_io_advise2;
+	ops->commit2 = nullfs_commit2;
+	ops->lock_op2 = nullfs_lock_op2;
+	ops->setattr2 = nullfs_setattr2;
+	ops->close2 = nullfs_close2;
 
 	/* xattr related functions */
 	ops->list_ext_attrs = nullfs_list_ext_attrs;
