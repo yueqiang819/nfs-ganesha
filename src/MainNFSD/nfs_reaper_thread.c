@@ -99,11 +99,13 @@ restart:
 			 */
 			if (client_rec != NULL)
 				inc_client_record_ref(client_rec);
+
 			PTHREAD_MUTEX_unlock(&client_id->cid_mutex);
+			PTHREAD_RWLOCK_unlock(&ht_reap->partitions[i].lock);
+
 			if (client_rec != NULL)
 				PTHREAD_MUTEX_lock(&client_rec->cr_mutex);
 
-			PTHREAD_RWLOCK_unlock(&ht_reap->partitions[i].lock);
 			nfs_client_id_expire(client_id, false);
 
 			if (client_rec != NULL) {
@@ -136,6 +138,7 @@ static int reap_expired_open_owners(void)
 	time_t tnow = time(NULL);
 	time_t texpire;
 	state_owner_t *owner;
+	struct state_nfs4_owner_t *nfs4_owner;
 
 	PTHREAD_MUTEX_lock(&cached_open_owners_lock);
 
@@ -144,18 +147,15 @@ static int reap_expired_open_owners(void)
 	 * thread to get a primary reference to these owners while we
 	 * process, and thus prevent them from expiring.
 	 */
+	while (true) {
+		owner = glist_first_entry(&cached_open_owners, state_owner_t,
+				so_owner.so_nfs4_owner.so_cache_entry);
 
-	owner = glist_first_entry(&cached_open_owners,
-				  state_owner_t,
-				  so_owner.so_nfs4_owner.so_state_list);
-
-	while (owner != NULL) {
-		struct state_nfs4_owner_t *nfs4_owner;
+		if (owner == NULL)
+			break;
 
 		nfs4_owner = &owner->so_owner.so_nfs4_owner;
-
-		texpire = atomic_fetch_time_t(&nfs4_owner->cache_expire);
-
+		texpire = atomic_fetch_time_t(&nfs4_owner->so_cache_expire);
 		if (texpire > tnow) {
 			/* This owner has not yet expired. */
 			if (isFullDebug(COMPONENT_STATE)) {
@@ -178,18 +178,11 @@ static int reap_expired_open_owners(void)
 			 * rest are also not expired.
 			 */
 			break;
-		} else {
-			/* This cached owner has expired, uncache it. */
-			uncache_nfs4_owner(nfs4_owner);
-
-			count++;
-
-			/* Get the next owner to examine. */
-			owner = glist_first_entry(
-					&cached_open_owners,
-					state_owner_t,
-					so_owner.so_nfs4_owner.so_state_list);
 		}
+
+		/* This cached owner has expired, uncache it. */
+		uncache_nfs4_owner(nfs4_owner);
+		count++;
 	}
 
 	PTHREAD_MUTEX_unlock(&cached_open_owners_lock);

@@ -52,6 +52,9 @@
 #include "mdcache_lru.h"
 #include "city.h"
 #include <libgen.h>
+#ifdef USE_LTTNG
+#include "gsh_lttng/mdcache.h"
+#endif
 
 /**
  * @brief The table partition
@@ -172,19 +175,7 @@ static inline struct avltree_node *
 cih_fhcache_inline_lookup(const struct avltree *tree,
 			  const struct avltree_node *key)
 {
-	struct avltree_node *node = tree->root;
-	int res = 0;
-
-	while (node) {
-		res = cih_fh_cmpf(node, key);
-		if (res == 0)
-			return node;
-		if (res > 0)
-			node = node->left;
-		else
-			node = node->right;
-	}
-	return NULL;
+	return avltree_inline_lookup(key, tree, cih_fh_cmpf);
 }
 
 #define CIH_HASH_NONE           0x0000
@@ -371,6 +362,10 @@ cih_set_latched(mdcache_entry_t *entry, cih_latch_t *latch,
 
 	(void)avltree_insert(&entry->fh_hk.node_k, &cp->t);
 	entry->fh_hk.inavl = true;
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_lru_insert, __func__, __LINE__, entry,
+		   entry->lru.refcnt);
+#endif
 
 	if (likely(flags & CIH_SET_UNLOCK))
 		cih_hash_release(latch);
@@ -384,7 +379,7 @@ cih_set_latched(mdcache_entry_t *entry, cih_latch_t *latch,
  * Remove cache entry with existence check.  The entry is assumed to
  * be hashed.
  *
- * @param entry [in] Entry to be removed.0
+ * @param entry [in] Entry to be removed.
  *
  * @return (void)
  */
@@ -399,6 +394,10 @@ cih_remove_checked(mdcache_entry_t *entry)
 	PTHREAD_RWLOCK_wrlock(&cp->lock);
 	node = cih_fhcache_inline_lookup(&cp->t, &entry->fh_hk.node_k);
 	if (entry->fh_hk.inavl && node) {
+#ifdef USE_LTTNG
+		tracepoint(mdcache, mdc_lru_remove, __func__, __LINE__, entry,
+			   entry->lru.refcnt);
+#endif
 		avltree_remove(node, &cp->t);
 		cp->cache[cih_cache_offsetof(&cih_fhcache,
 					     entry->fh_hk.key.hk)] = NULL;
@@ -432,6 +431,10 @@ cih_remove_latched(mdcache_entry_t *entry, cih_latch_t *latch, uint32_t flags)
 	uint32_t lflags = LRU_FLAG_NONE;
 
 	if (entry->fh_hk.inavl) {
+#ifdef USE_LTTNG
+		tracepoint(mdcache, mdc_lru_remove, __func__, __LINE__, entry,
+			   entry->lru.refcnt);
+#endif
 		avltree_remove(&entry->fh_hk.node_k, &cp->t);
 		cp->cache[cih_cache_offsetof(&cih_fhcache,
 					     entry->fh_hk.key.hk)] = NULL;

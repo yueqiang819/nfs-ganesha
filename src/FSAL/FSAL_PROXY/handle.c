@@ -43,6 +43,7 @@
 #include "nfs_proto_functions.h"
 #include "nfs_proto_tools.h"
 #include "export_mgr.h"
+#include "common_utils.h"
 
 #define FSAL_PROXY_NFS_V4 4
 
@@ -129,6 +130,12 @@ static struct pxy_obj_handle *pxy_alloc_handle(struct fsal_export *exp,
 					       const nfs_fh4 *fh,
 					       fattr4 *obj_attributes,
 					       struct attrlist *attrs_out);
+
+#define FSAL_VERIFIER_T_TO_VERIFIER4(verif4, fsal_verif)		\
+do { \
+	BUILD_BUG_ON(sizeof(fsal_verifier_t) != sizeof(verifier4));	\
+	memcpy(verif4, fsal_verif, sizeof(fsal_verifier_t));		\
+} while (0)
 
 static fsal_status_t nfsstat4_to_fsal(nfsstat4 nfsstatus)
 {
@@ -265,6 +272,11 @@ static struct bitmap4 pxy_bitmap_fsinfo = {
 
 static struct bitmap4 lease_bits = {
 	.map[0] = PXY_ATTR_BIT(FATTR4_LEASE_TIME),
+	.bitmap4_len = 1
+};
+
+static struct bitmap4 pxy_bitmap_mread_mwrite = {
+	.map[0] = PXY_ATTR_BIT(FATTR4_MAXREAD) | PXY_ATTR_BIT(FATTR4_MAXWRITE),
 	.bitmap4_len = 1
 };
 
@@ -495,7 +507,7 @@ static void *pxy_rpc_recv(void *arg)
 
 	memset(&addr_rpc, 0, sizeof(addr_rpc));
 	addr_rpc.sin_family = AF_INET;
-	addr_rpc.sin_port = info->srv_port;
+	addr_rpc.sin_port = htons(info->srv_port);
 	memcpy(&addr_rpc.sin_addr, &info_sock->sin_addr,
 	       sizeof(struct in_addr));
 
@@ -513,7 +525,7 @@ static void *pxy_rpc_recv(void *arg)
 							  &addr_rpc.sin_addr,
 							  addr,
 							  sizeof(addr)),
-						ntohs(info->srv_port));
+						info->srv_port);
 				PTHREAD_MUTEX_unlock(&listlock);
 				sleep(info->retry_sleeptime);
 				nsleeps++;
@@ -590,9 +602,9 @@ static enum clnt_stat pxy_process_reply(struct pxy_rpc_io_context *ctx,
 		XDR x;
 
 		memset(&reply, 0, sizeof(reply));
-		reply.acpted_rply.ar_results.proc =
+		reply.RPCM_ack.ar_results.proc =
 		    (xdrproc_t) xdr_COMPOUND4res;
-		reply.acpted_rply.ar_results.where = (caddr_t) res;
+		reply.RPCM_ack.ar_results.where = (caddr_t) res;
 
 		memset(&x, 0, sizeof(x));
 		xdrmem_create(&x, ctx->recvbuf, ctx->ioresult, XDR_DECODE);
@@ -640,8 +652,8 @@ static enum clnt_stat pxy_process_reply(struct pxy_rpc_io_context *ctx,
 			rc = RPC_CANTDECODERES;
 		}
 
-		reply.acpted_rply.ar_results.proc = (xdrproc_t) xdr_void;
-		reply.acpted_rply.ar_results.where = NULL;
+		reply.RPCM_ack.ar_results.proc = (xdrproc_t) xdr_void;
+		reply.RPCM_ack.ar_results.where = NULL;
 
 		xdr_free((xdrproc_t) xdr_replymsg, &reply);
 	}
@@ -685,9 +697,9 @@ static int pxy_compoundv4_call(struct pxy_rpc_io_context *pcontext,
 	rmsg.rm_direction = CALL;
 
 	rmsg.rm_call.cb_rpcvers = RPC_MSG_VERSION;
-	rmsg.rm_call.cb_prog = pcontext->nfs_prog;
-	rmsg.rm_call.cb_vers = FSAL_PROXY_NFS_V4;
-	rmsg.rm_call.cb_proc = NFSPROC4_COMPOUND;
+	rmsg.cb_prog = pcontext->nfs_prog;
+	rmsg.cb_vers = FSAL_PROXY_NFS_V4;
+	rmsg.cb_proc = NFSPROC4_COMPOUND;
 
 	if (cred) {
 		au = authunix_create(pxy_hostname, cred->caller_uid,
@@ -699,8 +711,8 @@ static int pxy_compoundv4_call(struct pxy_rpc_io_context *pcontext,
 	if (au == NULL)
 		return RPC_AUTHERROR;
 
-	rmsg.rm_call.cb_cred = au->ah_cred;
-	rmsg.rm_call.cb_verf = au->ah_verf;
+	rmsg.cb_cred = au->ah_cred;
+	rmsg.cb_verf = au->ah_verf;
 
 	memset(&x, 0, sizeof(x));
 	xdrmem_create(&x, pcontext->sendbuf + 4, pcontext->sendbuf_sz,
@@ -820,6 +832,7 @@ static int pxy_setclientid(clientid4 *resultclientid, uint32_t *lease_time)
 	nfs_argop4 arg[FSAL_CLIENTID_NB_OP_ALLOC];
 	nfs_resop4 res[FSAL_CLIENTID_NB_OP_ALLOC];
 	nfs_client_id4 nfsclientid;
+	uint64_t temp_verifier;
 	cb_client4 cbproxy;
 	char clientid_name[MAXNAMLEN + 1];
 	SETCLIENTID4resok *sok;
@@ -838,12 +851,11 @@ static int pxy_setclientid(clientid4 *resultclientid, uint32_t *lease_time)
 		 getpid());
 	nfsclientid.id.id_len = strlen(clientid_name);
 	nfsclientid.id.id_val = clientid_name;
-	if (sizeof(ServerBootTime.tv_sec) == NFS4_VERIFIER_SIZE)
-		memcpy(&nfsclientid.verifier, &ServerBootTime.tv_sec,
-		       sizeof(nfsclientid.verifier));
-	else
-		snprintf(nfsclientid.verifier, NFS4_VERIFIER_SIZE, "%08x",
-			 (int)ServerBootTime.tv_sec);
+
+	/* copy to intermediate uint64_t to 0-fill or truncate as needed */
+	temp_verifier = (uint64_t)ServerBootTime.tv_sec;
+	BUILD_BUG_ON(sizeof(nfsclientid.verifier) != sizeof(uint64_t));
+	memcpy(&nfsclientid.verifier, &temp_verifier, sizeof(uint64_t));
 
 	cbproxy.cb_program = 0;
 	cbproxy.cb_location.r_netid = "tcp";
@@ -1019,6 +1031,41 @@ static fsal_status_t pxy_make_object(struct fsal_export *export,
 }
 
 /*
+ * cap maxread and maxwrite config values to background server values
+ */
+static void pxy_check_maxread_maxwrite(struct fsal_export *export, fattr4 *f4)
+{
+	fsal_dynamicfsinfo_t info;
+	int rc;
+
+	rc = nfs4_Fattr_To_fsinfo(&info, f4);
+	if (rc != NFS4_OK) {
+		LogWarn(COMPONENT_FSAL,
+			"Unable to get maxread and maxwrite from background NFS server : %d",
+			rc);
+	} else {
+		struct pxy_fsal_module *pm =
+		    container_of(export->fsal, struct pxy_fsal_module, module);
+
+		if (info.maxread != 0 && pm->fsinfo.maxread > info.maxread) {
+			LogWarn(COMPONENT_FSAL,
+				"Reduced maxread from %"PRIu64
+				" to align with remote server %"PRIu64,
+				pm->fsinfo.maxread, info.maxread);
+			pm->fsinfo.maxread = info.maxread;
+		}
+
+		if (info.maxwrite != 0 && pm->fsinfo.maxwrite > info.maxwrite) {
+			LogWarn(COMPONENT_FSAL,
+				"Reduced maxwrite from %"PRIu64
+				" to align with remote server %"PRIu64,
+				pm->fsinfo.maxwrite, info.maxwrite);
+			pm->fsinfo.maxwrite = info.maxwrite;
+		}
+	}
+}
+
+/*
  * NULL parent pointer is only used by lookup_path when it starts
  * from the root handle and has its own export pointer, everybody
  * else is supposed to provide a real parent pointer and matching
@@ -1034,11 +1081,14 @@ static fsal_status_t pxy_lookup_impl(struct fsal_obj_handle *parent,
 	int rc;
 	uint32_t opcnt = 0;
 	GETATTR4resok *atok;
+	GETATTR4resok *atok_mread_mwrite;
 	GETFH4resok *fhok;
-#define FSAL_LOOKUP_NB_OP_ALLOC 4
+	/* PUTROOTFH/PUTFH LOOKUP GETFH GETATTR (GETATTR) */
+#define FSAL_LOOKUP_NB_OP_ALLOC 5
 	nfs_argop4 argoparray[FSAL_LOOKUP_NB_OP_ALLOC];
 	nfs_resop4 resoparray[FSAL_LOOKUP_NB_OP_ALLOC];
 	char fattr_blob[FATTR_BLOB_SZ];
+	char fattr_blob_mread_mwrite[FATTR_BLOB_SZ];
 	char padfilehandle[NFS4_FHSIZE];
 
 	if (!handle)
@@ -1082,12 +1132,26 @@ static fsal_status_t pxy_lookup_impl(struct fsal_obj_handle *parent,
 
 	COMPOUNDV4_ARG_ADD_OP_GETATTR(opcnt, argoparray, pxy_bitmap_getattr);
 
+	/* Dynamic ask of server maxread and maxwrite */
+	if (!parent) {
+		atok_mread_mwrite =
+		    pxy_fill_getattr_reply(resoparray + opcnt,
+					   fattr_blob_mread_mwrite,
+					   sizeof(fattr_blob_mread_mwrite));
+		COMPOUNDV4_ARG_ADD_OP_GETATTR(opcnt, argoparray,
+					      pxy_bitmap_mread_mwrite);
+	}
 	fhok->object.nfs_fh4_val = (char *)padfilehandle;
 	fhok->object.nfs_fh4_len = sizeof(padfilehandle);
 
 	rc = pxy_nfsv4_call(export, cred, opcnt, argoparray, resoparray);
 	if (rc != NFS4_OK)
 		return nfsstat4_to_fsal(rc);
+
+	/* Dynamic check of server maxread and maxwrite */
+	if (!parent)
+		pxy_check_maxread_maxwrite(export,
+					   &atok_mread_mwrite->obj_attributes);
 
 	return pxy_make_object(export, &atok->obj_attributes, &fhok->object,
 			       handle, attrs_out);
@@ -1310,7 +1374,7 @@ static fsal_status_t pxy_mkdir(struct fsal_obj_handle *dir_hdl,
 
 static fsal_status_t pxy_mknod(struct fsal_obj_handle *dir_hdl,
 			       const char *name, object_file_type_t nodetype,
-			       fsal_dev_t *dev, struct attrlist *attrib,
+			       struct attrlist *attrib,
 			       struct fsal_obj_handle **handle,
 			       struct attrlist *attrs_out)
 {
@@ -1331,17 +1395,13 @@ static fsal_status_t pxy_mknod(struct fsal_obj_handle *dir_hdl,
 
 	switch (nodetype) {
 	case CHARACTER_FILE:
-		if (!dev)
-			return fsalstat(ERR_FSAL_FAULT, EINVAL);
-		specdata.specdata1 = dev->major;
-		specdata.specdata2 = dev->minor;
+		specdata.specdata1 = attrib->rawdev.major;
+		specdata.specdata2 = attrib->rawdev.minor;
 		nf4type = NF4CHR;
 		break;
 	case BLOCK_FILE:
-		if (!dev)
-			return fsalstat(ERR_FSAL_FAULT, EINVAL);
-		specdata.specdata1 = dev->major;
-		specdata.specdata2 = dev->minor;
+		specdata.specdata1 = attrib->rawdev.major;
+		specdata.specdata2 = attrib->rawdev.minor;
 		nf4type = NF4BLK;
 		break;
 	case SOCKET_FILE:
@@ -1569,7 +1629,7 @@ static fsal_status_t pxy_do_readdir(struct pxy_obj_handle *ph,
 		struct attrlist attrs;
 		char name[MAXNAMLEN + 1];
 		struct fsal_obj_handle *handle;
-		bool cb_rc;
+		enum fsal_dir_result cb_rc;
 
 		/* UTF8 name does not include trailing 0 */
 		if (e4->name.utf8string_len > sizeof(name) - 1)
@@ -1592,11 +1652,11 @@ static fsal_status_t pxy_do_readdir(struct pxy_obj_handle *ph,
 		if (FSAL_IS_ERROR(st))
 			break;
 
-		cb_rc = cb(name, handle, &attrs, cbarg, e4->cookie);
+		cb_rc = cb(name, handle, &attrs, cbarg, e4->cookie, NULL);
 
 		fsal_release_attrs(&attrs);
 
-		if (!cb_rc)
+		if (cb_rc >= DIR_TERMINATE)
 			break;
 	}
 	xdr_free((xdrproc_t) xdr_readdirres, resoparray);
@@ -1974,7 +2034,12 @@ static fsal_status_t pxy_write(struct fsal_obj_handle *obj_hdl,
 
 	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
 	wok = &resoparray[opcnt].nfs_resop4_u.opwrite.WRITE4res_u.resok4;
-	COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argoparray, offset, buffer, size);
+	if (*fsal_stable)
+		COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argoparray, offset, buffer,
+					    size, DATA_SYNC4);
+	else
+		COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argoparray, offset, buffer,
+					    size, UNSTABLE4);
 
 	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
 			    opcnt, argoparray, resoparray);
@@ -1982,7 +2047,10 @@ static fsal_status_t pxy_write(struct fsal_obj_handle *obj_hdl,
 		return nfsstat4_to_fsal(rc);
 
 	*write_amount = wok->count;
-	*fsal_stable = false;
+	if (wok->committed == UNSTABLE4)
+		*fsal_stable = false;
+	else
+		*fsal_stable = true;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -1992,20 +2060,563 @@ static fsal_status_t pxy_commit(struct fsal_obj_handle *obj_hdl,
 				off_t offset,
 				size_t len)
 {
+	struct pxy_obj_handle *ph;
+	int rc; /* return code of nfs call */
+	int opcnt = 0; /* nfs arg counter */
+	/* PUTFH, COMMIT */
+#define FSAL_COMMIT_NB_OP 2
+	nfs_argop4 argoparray[FSAL_COMMIT_NB_OP];
+	nfs_resop4 resoparray[FSAL_COMMIT_NB_OP];
+
+	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
+
+	/* prepare PUTFH */
+	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+
+	/* prepare SETATTR */
+	COMPOUNDV4_ARG_ADD_OP_COMMIT(opcnt, argoparray, offset, len);
+
+	/* nfs call */
+	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
+			    opcnt, argoparray, resoparray);
+	if (rc != NFS4_OK)
+		return nfsstat4_to_fsal(rc);
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+/*
+ * In this first FSAL_PROXY support_ex version without state
+ * nothing to do on close.
+ */
 static fsal_status_t pxy_close(struct fsal_obj_handle *obj_hdl)
 {
-	struct pxy_obj_handle *ph;
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
 
-	if (!obj_hdl)
-		return fsalstat(ERR_FSAL_FAULT, EINVAL);
+/*
+ * support_ex methods
+ *
+ * This first dirty version of support_ex in FSAL_PROXY doesn't take care of
+ * any state.
+ *
+ * The goal achieves by this first dirty version is only to be compliant with
+ * support_ex fsal api.
+ */
+
+/**
+ * @brief Fill share_access and share_deny fields of an OPEN4args struct
+ *
+ * This function fills share_access and share_deny fields of an OPEN4args
+ * struct to prepare an OPEN v4.1 call.
+ *
+ * @param[in]     openflags      fsal open flags
+ * @param[in,out] share_access   share_access field to be filled
+ * @param[in,out] share_deny     share_deny field to be filled
+ *
+ * @return FSAL status.
+ */
+static fsal_status_t  fill_share_OPEN4args(uint32_t *share_access,
+					   uint32_t *share_deny,
+					   fsal_openflags_t openflags)
+{
+
+	/* share access */
+	*share_access = 0;
+	if (openflags & FSAL_O_READ)
+		*share_access |= OPEN4_SHARE_ACCESS_READ;
+	if (openflags & FSAL_O_WRITE)
+		*share_access |= OPEN4_SHARE_ACCESS_WRITE;
+	/* share write */
+	*share_deny = OPEN4_SHARE_DENY_NONE;
+	if (openflags & FSAL_O_DENY_READ)
+		*share_deny |= OPEN4_SHARE_DENY_READ;
+	if (openflags & FSAL_O_DENY_WRITE ||
+	    openflags & FSAL_O_DENY_WRITE_MAND)
+		*share_deny |= OPEN4_SHARE_DENY_WRITE;
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+/**
+ * @brief Fill openhow field of an OPEN4args struct
+ *
+ * This function fills an openflags4 openhow field of an OPEN4args struct
+ * to prepare an OPEN v4.1 call.
+ *
+ * @param[in]     attrs_in       open atributes
+ * @param[in]     create_mode    open create mode
+ * @param[in]     verifier       open verifier
+ * @param[in,out] openhow        openhow field to be filled
+ * @param[in,out] inattrs        created inattrs (need to be freed by calling
+ *                               nfs4_Fattr_Free)
+ *
+ * @return FSAL status.
+ */
+static fsal_status_t fill_openhow_OPEN4args(openflag4 *openhow,
+					    fattr4 inattrs,
+					    enum fsal_create_mode createmode,
+					    fsal_verifier_t verifier)
+{
+	if (openhow == NULL)
+		return fsalstat(ERR_FSAL_INVAL, -1);
+
+	/* openhow */
+	if (createmode != FSAL_NO_CREATE) {
+		createhow4 *how = &(openhow->openflag4_u.how);
+
+		openhow->opentype = OPEN4_CREATE;
+		switch (createmode) {
+		case FSAL_UNCHECKED:
+			how->mode = UNCHECKED4;
+			how->createhow4_u.createattrs = inattrs;
+			break;
+		case FSAL_GUARDED:
+		case FSAL_EXCLUSIVE_9P:
+			how->mode = GUARDED4;
+			how->createhow4_u.createattrs = inattrs;
+			break;
+		case FSAL_EXCLUSIVE:
+		case FSAL_EXCLUSIVE_41: /* waiting for a 4.1 FSAL_PROXY */
+			how->mode = EXCLUSIVE4;
+			FSAL_VERIFIER_T_TO_VERIFIER4(
+				how->createhow4_u.createverf, verifier);
+			break;
+		default:
+			return fsalstat(ERR_FSAL_FAULT,
+					EINVAL);
+		}
+	} else
+		openhow->opentype = OPEN4_NOCREATE;
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_open2(struct fsal_obj_handle *obj_hdl,
+			       struct state_t *state,
+			       fsal_openflags_t openflags,
+			       enum fsal_create_mode createmode,
+			       const char *name,
+			       struct attrlist *attrs_in,
+			       fsal_verifier_t verifier,
+			       struct fsal_obj_handle **new_obj,
+			       struct attrlist *attrs_out,
+			       bool *caller_perm_check)
+{
+	struct pxy_obj_handle *ph;
+	int rc; /* return code of nfs call */
+	int opcnt = 0; /* nfs arg counter */
+	fsal_status_t st; /* return code of fsal call */
+	char padfilehandle[NFS4_FHSIZE]; /* gotten FH */
+	seqid4 open_owner_seqid = 0;
+	clientid4 cid;
+	char owner_val[128];
+	unsigned int owner_len = 0;
+	uint32_t share_access = 0;
+	uint32_t share_deny = 0;
+	openflag4 openhow;
+	fattr4 inattrs;
+	open_claim4 claim;
+	/* OPEN BY NAME : PUTFH, OPEN, GETFH, GETATTR */
+	/* OPEN BY HANDLE : PUTFH SETATTR GETATTR */
+	#define FSAL_OPEN_NB_OP 4
+	nfs_argop4 argoparray[FSAL_OPEN_NB_OP];
+	nfs_resop4 resoparray[FSAL_OPEN_NB_OP];
+	OPEN4resok *opok;
+	GETFH4resok *fhok;
+	GETATTR4resok *atok;
+	char fattr_blob[FATTR_BLOB_SZ];
+
+	/* we have not done yet any check */
+	*caller_perm_check = true;
+
+	/* get back proxy handle */
+	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
+
+	/* include TRUNCATE case in attrs_in */
+	if (openflags & FSAL_O_TRUNC) {
+		if (name)
+			attrs_in->valid_mask |= ATTR_SIZE;
+		else
+			attrs_in->valid_mask = ATTR_SIZE;
+		attrs_in->filesize = 0;
+	}
+
+	/* fill inattrs */
+	if (pxy_fsalattr_to_fattr4(attrs_in, &inattrs) == -1)
+		return fsalstat(ERR_FSAL_INVAL, -1);
+
+	if (name) {
+		/*
+		* We do the open to get handle, check perm, check share, trunc,
+		* create if needed ...
+		*/
+		/* open call will do the perm check */
+		*caller_perm_check = false;
+
+		/* prepare open call */
+		/* PUTFH */
+		COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+
+		/* OPEN */
+		/* prepare answer */
+		opok =
+		    &resoparray[opcnt].nfs_resop4_u.opopen.OPEN4res_u.resok4;
+		opok->rflags = 0; /* set to NULL for safety */
+		opok->attrset = empty_bitmap; /* set to empty for safety */
+		/* prepare open input args */
+		/* share_access and share_deny */
+		st = fill_share_OPEN4args(&share_access, &share_deny,
+					  openflags);
+		if (FSAL_IS_ERROR(st)) {
+			nfs4_Fattr_Free(&inattrs);
+			return st;
+		}
+
+		/* owner */
+		pxy_get_clientid(&cid);
+		snprintf(owner_val, sizeof(owner_val),
+			 "GANESHA/PROXY: pid=%u %" PRIu64, getpid(),
+			 atomic_inc_uint64_t(&fcnt));
+		owner_len = strnlen(owner_val, sizeof(owner_val));
+		/* inattrs and openhow */
+		st = fill_openhow_OPEN4args(&openhow, inattrs, createmode,
+					    verifier);
+		if (FSAL_IS_ERROR(st)) {
+			nfs4_Fattr_Free(&inattrs);
+			return st;
+		}
+
+		/* claim : first support_ex version, no state -> no claim */
+		claim.claim = CLAIM_NULL;
+		claim.open_claim4_u.file.utf8string_val = (char *)name;
+		claim.open_claim4_u.file.utf8string_len = strlen(name);
+		/* add open */
+		COMPOUNDV4_ARGS_ADD_OP_OPEN(opcnt, argoparray,
+					    open_owner_seqid, share_access,
+					    share_deny, cid, owner_val,
+					    owner_len, openhow, claim);
+
+		/* GETFH */
+		/* prepare answer */
+		fhok =
+		    &resoparray[opcnt].nfs_resop4_u.opgetfh.GETFH4res_u.resok4;
+		fhok->object.nfs_fh4_val = padfilehandle;
+		fhok->object.nfs_fh4_len = sizeof(padfilehandle);
+		COMPOUNDV4_ARG_ADD_OP_GETFH(opcnt, argoparray);
+		/* GETATTR */
+		atok = pxy_fill_getattr_reply(resoparray + opcnt, fattr_blob,
+					      sizeof(fattr_blob));
+		COMPOUNDV4_ARG_ADD_OP_GETATTR(opcnt, argoparray,
+					      pxy_bitmap_getattr);
+
+		/* nfs call*/
+		rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds, opcnt,
+				    argoparray, resoparray);
+		if (rc != NFS4_OK) {
+			nfs4_Fattr_Free(&inattrs);
+			return nfsstat4_to_fsal(rc);
+		}
+
+		/* See if a OPEN_CONFIRM is required */
+		if (opok->rflags & OPEN4_RESULT_CONFIRM) {
+			st = pxy_open_confirm(op_ctx->creds, &fhok->object,
+					      ++open_owner_seqid,
+					      &opok->stateid,
+					      op_ctx->fsal_export);
+			if (FSAL_IS_ERROR(st))
+				return st;
+		}
+
+		/* The created file is still opened, to preserve the correct
+		 * seqid for later use, we close it */
+		/* we don't manage state : immediately close state on server */
+		st = pxy_do_close(op_ctx->creds, &fhok->object,
+				  ++open_owner_seqid, &opok->stateid,
+				  op_ctx->fsal_export);
+	} else if (attrs_out || openflags & FSAL_O_TRUNC) {
+	/* open by handle */
+	/* we have nothing to do except getattr or truncate */
+	/* (Waiting v4.1 FSAL_PROXY to delete this additionnal setattr.) */
+
+		/* prepare open call */
+		/* PUTFH */
+		COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+
+		/* SETATTR for truncate */
+		if (openflags & FSAL_O_TRUNC) {
+			resoparray[opcnt].nfs_resop4_u.opsetattr.attrsset =
+								empty_bitmap;
+			COMPOUNDV4_ARG_ADD_OP_SETATTR(opcnt, argoparray,
+						      inattrs);
+		}
+
+		/* GETATTR */
+		atok = pxy_fill_getattr_reply(resoparray + opcnt, fattr_blob,
+					      sizeof(fattr_blob));
+		COMPOUNDV4_ARG_ADD_OP_GETATTR(opcnt, argoparray,
+					      pxy_bitmap_getattr);
+
+		/* nfs call*/
+		rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds, opcnt,
+				    argoparray, resoparray);
+		if (rc != NFS4_OK) {
+			nfs4_Fattr_Free(&inattrs);
+			return nfsstat4_to_fsal(rc);
+		}
+	}
+
+	/* cleaning inattrs */
+	nfs4_Fattr_Free(&inattrs);
+
+	/* create a new handle if asked and attrs_out by the way */
+	if (new_obj) {
+		if (name) {
+			/* create new_obj and set attrs_out*/
+			st = pxy_make_object(op_ctx->fsal_export,
+					     &atok->obj_attributes,
+					     &fhok->object,
+					     new_obj, attrs_out);
+			if (FSAL_IS_ERROR(st))
+				return st;
+		} else {
+			*new_obj = obj_hdl;
+		}
+	}
+	if (attrs_out && (!new_obj || (new_obj && !name))) {
+		rc = nfs4_Fattr_To_FSAL_attr(attrs_out, &atok->obj_attributes,
+					     NULL);
+		if (rc != NFS4_OK)
+			return nfsstat4_to_fsal(rc);
+	}
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_read2(struct fsal_obj_handle *obj_hdl,
+			       bool bypass,
+			       struct state_t *state,
+			       uint64_t offset,
+			       size_t buffer_size,
+			       void *buffer,
+			       size_t *read_amount,
+			       bool *end_of_file,
+			       struct io_info *info)
+{
+	int maxReadSize;
+	int rc;
+	int opcnt = 0;
+	struct pxy_obj_handle *ph;
+#define FSAL_READ2_NB_OP_ALLOC 2 /* PUTFH + READ */
+	nfs_argop4 argoparray[FSAL_READ2_NB_OP_ALLOC];
+	nfs_resop4 resoparray[FSAL_READ2_NB_OP_ALLOC];
+	READ4resok *rok;
 
 	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
-	if (ph->openflags == FSAL_O_CLOSED)
-		return fsalstat(ERR_FSAL_NOT_OPENED, EBADF);
-	ph->openflags = FSAL_O_CLOSED;
+
+	maxReadSize = op_ctx->fsal_export->exp_ops.fs_maxread(
+							op_ctx->fsal_export);
+	if (buffer_size > maxReadSize)
+		buffer_size = maxReadSize;
+
+	/* prepare PUTFH */
+	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+	/* prepare READ */
+	rok = &resoparray[opcnt].nfs_resop4_u.opread.READ4res_u.resok4;
+	rok->data.data_val = buffer;
+	rok->data.data_len = buffer_size;
+	if (bypass)
+		COMPOUNDV4_ARG_ADD_OP_READ_BYPASS(opcnt, argoparray, offset,
+						  buffer_size);
+	else
+		COMPOUNDV4_ARG_ADD_OP_READ(opcnt, argoparray, offset,
+					   buffer_size);
+
+	/* nfs call */
+	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
+			    opcnt, argoparray, resoparray);
+	if (rc != NFS4_OK)
+		return nfsstat4_to_fsal(rc);
+
+	*end_of_file = rok->eof;
+	*read_amount = rok->data.data_len;
+	if (info) {
+		info->io_content.what = NFS4_CONTENT_DATA;
+		info->io_content.data.d_offset = offset + *read_amount;
+		info->io_content.data.d_data.data_len = *read_amount;
+		info->io_content.data.d_data.data_val = buffer;
+	}
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_write2(struct fsal_obj_handle *obj_hdl,
+				bool bypass,
+				struct state_t *state,
+				uint64_t offset,
+				size_t buffer_size,
+				void *buffer,
+				size_t *wrote_amount,
+				bool *fsal_stable,
+				struct io_info *info)
+{
+	int maxWriteSize;
+	int rc;
+	int opcnt = 0;
+#define FSAL_WRITE_NB_OP_ALLOC 2 /* PUTFH + WRITE */
+	nfs_argop4 argoparray[FSAL_WRITE_NB_OP_ALLOC];
+	nfs_resop4 resoparray[FSAL_WRITE_NB_OP_ALLOC];
+	WRITE4resok *wok;
+	struct pxy_obj_handle *ph;
+
+	if (info != NULL) {
+		/* Currently we don't support WRITE_PLUS */
+		return fsalstat(ERR_FSAL_NOTSUPP, 0);
+	}
+
+	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
+
+	/* check max write size */
+	maxWriteSize = op_ctx->fsal_export->exp_ops.fs_maxwrite(
+							op_ctx->fsal_export);
+	if (buffer_size > maxWriteSize)
+		buffer_size = maxWriteSize;
+
+	/* prepare PUTFH */
+	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+	/* prepare write */
+	wok = &resoparray[opcnt].nfs_resop4_u.opwrite.WRITE4res_u.resok4;
+	if (*fsal_stable)
+		COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argoparray, offset, buffer,
+					    buffer_size, DATA_SYNC4);
+	else
+		COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argoparray, offset, buffer,
+					    buffer_size, UNSTABLE4);
+
+	/* nfs call */
+	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
+			    opcnt, argoparray, resoparray);
+	if (rc != NFS4_OK)
+		return nfsstat4_to_fsal(rc);
+
+	/* get res */
+	*wrote_amount = wok->count;
+	if (wok->committed == UNSTABLE4)
+		*fsal_stable = false;
+	else
+		*fsal_stable = true;
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_close2(struct fsal_obj_handle *obj_hdl,
+				struct state_t *state)
+{
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_setattr2(struct fsal_obj_handle *obj_hdl,
+				  bool bypass,
+				  struct state_t *state,
+				  struct attrlist *attrib_set)
+{
+	int rc;
+	fattr4 input_attr;
+	uint32_t opcnt = 0;
+	struct pxy_obj_handle *ph;
+	/* PUTFH SETATTR */
+#define FSAL_SETATTR2_NB_OP_ALLOC 2
+	nfs_argop4 argoparray[FSAL_SETATTR2_NB_OP_ALLOC];
+	nfs_resop4 resoparray[FSAL_SETATTR2_NB_OP_ALLOC];
+
+	/*prepare attributes */
+	/*
+	* No way to update CTIME using a NFSv4 SETATTR.
+	* Server will return NFS4ERR_INVAL (22).
+	* time_metadata is a readonly attribute in NFSv4 and NFSv4.1.
+	* (section 5.7 in RFC7530 or RFC5651)
+	* Nevermind : this update is useless, we prevent it.
+	*/
+	FSAL_UNSET_MASK(attrib_set->valid_mask, ATTR_CTIME);
+
+	if (FSAL_TEST_MASK(attrib_set->valid_mask, ATTR_MODE))
+		attrib_set->mode &= ~op_ctx->fsal_export->exp_ops.
+				fs_umask(op_ctx->fsal_export);
+
+	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
+
+	if (pxy_fsalattr_to_fattr4(attrib_set, &input_attr) == -1)
+		return fsalstat(ERR_FSAL_INVAL, EINVAL);
+
+	/* prepare PUTFH */
+	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+
+	/* prepare SETATTR */
+	resoparray[opcnt].nfs_resop4_u.opsetattr.attrsset = empty_bitmap;
+	if (bypass)
+		/* even if bypass state will be treated like anonymous value */
+		/* RFC 5661, section 8.2.3 */
+		COMPOUNDV4_ARG_ADD_OP_SETATTR_BYPASS(opcnt, argoparray,
+						     input_attr);
+	else
+		/* even if valid state should be specified when setting size */
+		/* RFC 5661, section 18.30.3 */
+		COMPOUNDV4_ARG_ADD_OP_SETATTR(opcnt, argoparray, input_attr);
+
+	/* nfs call */
+	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
+			    opcnt, argoparray, resoparray);
+	nfs4_Fattr_Free(&input_attr);
+	if (rc != NFS4_OK)
+		return nfsstat4_to_fsal(rc);
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_openflags_t pxy_status2(struct fsal_obj_handle *obj_hdl,
+			     struct state_t *state)
+{
+	/* first version of support_ex, no state, no saved openflags */
+	fsal_openflags_t null_flags = 0; /* closed and deny_none*/
+
+	return null_flags;
+}
+
+static fsal_status_t pxy_reopen2(struct fsal_obj_handle *obj_hdl,
+			  struct state_t *state,
+			  fsal_openflags_t openflags)
+{
+	/* no way to open by handle in v4 */
+	/* waiting for v4.1 or solid state to really do the job */
+
+	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+}
+
+static fsal_status_t pxy_commit2(struct fsal_obj_handle *obj_hdl,
+		      off_t offset,
+		      size_t len)
+{
+	struct pxy_obj_handle *ph;
+	int rc; /* return code of nfs call */
+	int opcnt = 0; /* nfs arg counter */
+	/* PUTFH, COMMIT */
+#define FSAL_COMMIT2_NB_OP 2
+	nfs_argop4 argoparray[FSAL_COMMIT2_NB_OP];
+	nfs_resop4 resoparray[FSAL_COMMIT2_NB_OP];
+
+	ph = container_of(obj_hdl, struct pxy_obj_handle, obj);
+
+	/* prepare PUTFH */
+	COMPOUNDV4_ARG_ADD_OP_PUTFH(opcnt, argoparray, ph->fh4);
+
+	/* prepare COMMIT */
+	COMPOUNDV4_ARG_ADD_OP_COMMIT(opcnt, argoparray, offset, len);
+
+	/* nfs call */
+	rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds,
+			    opcnt, argoparray, resoparray);
+	if (rc != NFS4_OK)
+		return nfsstat4_to_fsal(rc);
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -2033,6 +2644,14 @@ void pxy_handle_ops_init(struct fsal_obj_ops *ops)
 	ops->handle_is = pxy_handle_is;
 	ops->handle_digest = pxy_handle_digest;
 	ops->handle_to_key = pxy_handle_to_key;
+	ops->open2 = pxy_open2;
+	ops->read2 = pxy_read2;
+	ops->write2 = pxy_write2;
+	ops->close2 = pxy_close2;
+	ops->setattr2 = pxy_setattr2;
+	ops->status2 = pxy_status2;
+	ops->reopen2 = pxy_reopen2;
+	ops->commit2 = pxy_commit2;
 }
 
 #ifdef PROXY_HANDLE_MAPPING

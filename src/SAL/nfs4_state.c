@@ -52,6 +52,9 @@
 #include "fsal_up.h"
 #include "nfs_file_handle.h"
 #include "nfs_proto_tools.h"
+#ifdef USE_LTTNG
+#include "gsh_lttng/state.h"
+#endif
 
 #ifdef DEBUG_SAL
 struct glist_head state_v4_all = GLIST_HEAD_INIT(state_v4_all);
@@ -79,11 +82,12 @@ pthread_mutex_t all_state_v4_mutex = PTHREAD_MUTEX_INITIALIZER;
  *
  * @return Operation status
  */
-state_status_t state_add_impl(struct fsal_obj_handle *obj,
-			      enum state_type state_type,
-			      union state_data *state_data,
-			      state_owner_t *owner_input, state_t **state,
-			      struct state_refer *refer)
+state_status_t _state_add_impl(struct fsal_obj_handle *obj,
+			       enum state_type state_type,
+			       union state_data *state_data,
+			       state_owner_t *owner_input, state_t **state,
+			       struct state_refer *refer,
+			       const char *func, int line)
 {
 	state_t *pnew_state = *state;
 	struct state_hdl *ostate = obj->state_hdl;
@@ -94,7 +98,6 @@ state_status_t state_add_impl(struct fsal_obj_handle *obj,
 	state_status_t status = 0;
 	bool mutex_init = false;
 	struct state_t *openstate = NULL;
-	struct gsh_buffdesc fh_desc;
 
 	if (isFullDebug(COMPONENT_STATE) && pnew_state != NULL) {
 		display_stateid(&dspbuf, pnew_state);
@@ -162,10 +165,7 @@ state_status_t state_add_impl(struct fsal_obj_handle *obj,
 	 */
 	pnew_state->state_export = op_ctx->ctx_export;
 	pnew_state->state_owner = owner_input;
-	fh_desc.addr = &pnew_state->state_obj.digest;
-	fh_desc.len = sizeof(pnew_state->state_obj.digest);
-	obj->obj_ops.handle_digest(obj, FSAL_DIGEST_NFSV4, &fh_desc);
-	pnew_state->state_obj.len = fh_desc.len;
+	pnew_state->state_obj = obj;
 
 	/* Add the state to the related hashtable */
 	if (!nfs4_State_Set(pnew_state)) {
@@ -202,7 +202,13 @@ state_status_t state_add_impl(struct fsal_obj_handle *obj,
 	/* Add state to list for file */
 	PTHREAD_MUTEX_lock(&pnew_state->state_mutex);
 	glist_add_tail(&ostate->file.list_of_states, &pnew_state->state_list);
+	/* Get ref for this state entry */
+	obj->obj_ops.get_ref(obj);
 	PTHREAD_MUTEX_unlock(&pnew_state->state_mutex);
+
+#ifdef USE_LTTNG
+	tracepoint(state, add, func, line, obj, pnew_state);
+#endif
 
 	/* Add state to list for owner */
 	PTHREAD_MUTEX_lock(&owner_input->so_mutex);
@@ -251,7 +257,8 @@ errout:
 		 */
 		(void) obj->obj_ops.close2(obj, pnew_state);
 
-		pnew_state->state_exp->exp_ops.free_state(pnew_state);
+		pnew_state->state_exp->exp_ops.free_state(pnew_state->state_exp,
+							  pnew_state);
 	}
 
 	if (got_export_ref)
@@ -274,11 +281,12 @@ errout:
  *
  * @return Operation status
  */
-state_status_t state_add(struct fsal_obj_handle *obj,
-			 enum state_type state_type,
-			 union state_data *state_data,
-			 state_owner_t *owner_input,
-			 state_t **state, struct state_refer *refer)
+state_status_t _state_add(struct fsal_obj_handle *obj,
+			  enum state_type state_type,
+			  union state_data *state_data,
+			  state_owner_t *owner_input,
+			  state_t **state, struct state_refer *refer,
+			  const char *func, int line)
 {
 	state_status_t status = 0;
 
@@ -298,8 +306,8 @@ state_status_t state_add(struct fsal_obj_handle *obj,
 
 	PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
 	status =
-	    state_add_impl(obj, state_type, state_data, owner_input, state,
-			   refer);
+	    _state_add_impl(obj, state_type, state_data, owner_input, state,
+			    refer, func, line);
 	PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
 	return status;
@@ -314,7 +322,7 @@ state_status_t state_add(struct fsal_obj_handle *obj,
  *
  */
 
-void state_del_locked(state_t *state)
+void _state_del_locked(state_t *state, const char *func, int line)
 {
 	char str[LOG_BUFF_LEN];
 	struct display_buffer dspbuf = {sizeof(str), str, str};
@@ -359,6 +367,10 @@ void state_del_locked(state_t *state)
 		return;
 	}
 
+#ifdef USE_LTTNG
+	tracepoint(state, delete, func, line, obj, state);
+#endif
+
 	export = state->state_export;
 	owner = state->state_owner;
 	PTHREAD_MUTEX_unlock(&state->state_mutex);
@@ -371,7 +383,9 @@ void state_del_locked(state_t *state)
 	/* Remove from the list of states for a particular file */
 	PTHREAD_MUTEX_lock(&state->state_mutex);
 	glist_del(&state->state_list);
-	memset(&state->state_obj, 0, sizeof(state->state_obj));
+	/* Put ref for this state entry */
+	obj->obj_ops.put_ref(obj);
+	state->state_obj = NULL;
 	PTHREAD_MUTEX_unlock(&state->state_mutex);
 
 	if (obj->fsal->m_ops.support_ex(obj)) {
@@ -400,9 +414,14 @@ void state_del_locked(state_t *state)
 
 		/* If we are dropping the last open state from an open
 		 * owner, we will want to retain a refcount and let the
-		 * reaper thread clean up with owner. */
+		 * reaper thread clean up with owner.
+		 *
+		 * @todo: should we make the following glist_null check
+		 * an assert or remove it altogether?
+		 */
 		owner_retain = owner->so_type == STATE_OPEN_OWNER_NFSV4 &&
-		    glist_empty(&nfs4_owner->so_state_list);
+		    glist_empty(&nfs4_owner->so_state_list) &&
+		    glist_null(&nfs4_owner->so_cache_entry);
 
 		PTHREAD_MUTEX_unlock(&state->state_mutex);
 
@@ -412,11 +431,11 @@ void state_del_locked(state_t *state)
 			 */
 			PTHREAD_MUTEX_lock(&cached_open_owners_lock);
 
-			atomic_store_time_t(&nfs4_owner->cache_expire,
+			atomic_store_time_t(&nfs4_owner->so_cache_expire,
 					    nfs_param.nfsv4_param.lease_lifetime
 						+ time(NULL));
 			glist_add_tail(&cached_open_owners,
-				       &nfs4_owner->so_state_list);
+				       &nfs4_owner->so_cache_entry);
 
 			if (isFullDebug(COMPONENT_STATE)) {
 				char str[LOG_BUFF_LEN];
@@ -709,7 +728,7 @@ void release_openstate(state_owner_t *owner)
 
 		PTHREAD_MUTEX_lock(&owner->so_mutex);
 
-		if (atomic_fetch_time_t(&nfs4_owner->cache_expire) != 0) {
+		if (atomic_fetch_time_t(&nfs4_owner->so_cache_expire) != 0) {
 			/* This owner has no state, it is a cached open owner.
 			 * Take cached_open_owners_lock and verify.
 			 *
@@ -718,7 +737,7 @@ void release_openstate(state_owner_t *owner)
 			 */
 			PTHREAD_MUTEX_lock(&cached_open_owners_lock);
 
-			if (atomic_fetch_time_t(&nfs4_owner->cache_expire)
+			if (atomic_fetch_time_t(&nfs4_owner->so_cache_expire)
 			    != 0) {
 				/* We aren't racing with the reaper thread or
 				 * with get_state_owner.
@@ -1096,7 +1115,7 @@ void state_export_release_nfs4_state(void)
 	if (errcnt == STATE_ERR_MAX) {
 		LogFatal(COMPONENT_STATE,
 			 "Could not complete cleanup of layouts for export %s",
-			 op_ctx->ctx_export->fullpath);
+			 op_ctx->ctx_export->pseudopath);
 	}
 }
 

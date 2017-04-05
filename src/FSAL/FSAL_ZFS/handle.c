@@ -405,7 +405,6 @@ static fsal_status_t tank_mkdir(struct fsal_obj_handle *dir_hdl,
 static fsal_status_t tank_makenode(struct fsal_obj_handle *dir_hdl,
 				   const char *name,
 				   object_file_type_t nodetype,	/* IN */
-				   fsal_dev_t *dev,	/* IN */
 				   struct attrlist *attrib,
 				   struct fsal_obj_handle **handle,
 				   struct attrlist *attrs_out)
@@ -626,7 +625,7 @@ static fsal_status_t tank_readdir(struct fsal_obj_handle *dir_hdl,
 			goto out;
 		for (index = 0; index < MAX_ENTRIES; index++) {
 			struct attrlist attrs;
-			bool cb_rc;
+			enum fsal_dir_result cb_rc;
 
 			/* If psz_filename is NULL,
 			 * that's the end of the list */
@@ -650,11 +649,11 @@ static fsal_status_t tank_readdir(struct fsal_obj_handle *dir_hdl,
 
 			/* callback to cache inode */
 			cb_rc = cb(dirents[index].psz_filename, obj, &attrs,
-				   dir_state, (fsal_cookie_t) index);
+				   dir_state, (fsal_cookie_t) index, NULL);
 
 			fsal_release_attrs(&attrs);
 
-			if (!cb_rc)
+			if (cb_rc >= DIR_TERMINATE)
 				goto done;
 		}
 

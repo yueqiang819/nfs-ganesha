@@ -51,7 +51,6 @@
 #include "nfs_exports.h"
 #include "export_mgr.h"
 #include "subfsal.h"
-#include "mdcache.h"
 
 /* helpers to/from other VFS objects
  */
@@ -352,16 +351,14 @@ static fsal_status_t set_quota(struct fsal_export *exp_hdl,
 /* extract a file handle from a buffer.
  * do verification checks and flag any and all suspicious bits.
  * Return an updated fh_desc into whatever was passed.  The most
- * common behavior, done here is to just reset the length.  There
- * is the option to also adjust the start pointer.
+ * common behavior, done here is to just reset the length.
  *
- * So, adjust the start pointer, check.  But setting the length
- * to sizeof(vfs_file_handle_t) coerces all handles to a value
- * too large for some applications (e.g., ESXi), and much larger
- * than necessary.  (On my Linux system, I'm seeing 12 byte file
- * handles (EXT4).  Since this routine has no idea what the
- * internal length was, it should not set the value (the length
- * comes from us anyway, it's up to us to get it right elsewhere).
+ * Setting the length to sizeof(vfs_file_handle_t) coerces all handles
+ * to a value too large for some applications (e.g., ESXi), and much
+ * larger than necessary.  (On my Linux system, I'm seeing 12 byte file
+ * handles (EXT4).  Since this routine has no idea what the internal
+ * length was, it should not set the value (the length comes from us
+ * anyway, it's up to us to get it right elsewhere).
  */
 
 static fsal_status_t extract_handle(struct fsal_export *exp_hdl,
@@ -404,6 +401,7 @@ void vfs_export_ops_init(struct export_ops *ops)
 	ops->get_quota = get_quota;
 	ops->set_quota = set_quota;
 	ops->alloc_state = vfs_alloc_state;
+	ops->free_state = vfs_free_state;
 }
 
 void free_vfs_filesystem(struct vfs_filesystem *vfs_fs)
@@ -576,8 +574,8 @@ fsal_status_t vfs_create_export(struct fsal_module *fsal_hdl,
 				       true,
 				       err_type);
 	if (retval != 0) {
-		retval = EINVAL;
-		goto errout;
+		fsal_status = posix2fsal_status(EINVAL);
+		goto err_free;
 	}
 	myself->export.fsal = fsal_hdl;
 	vfs_sub_init_export_ops(myself, op_ctx->ctx_export->fullpath);
@@ -585,7 +583,7 @@ fsal_status_t vfs_create_export(struct fsal_module *fsal_hdl,
 	retval = fsal_attach_export(fsal_hdl, &myself->export.exports);
 	if (retval != 0) {
 		fsal_status = posix2fsal_status(retval);
-		goto errout;	/* seriously bad */
+		goto err_free;	/* seriously bad */
 	}
 
 	retval = resolve_posix_filesystem(op_ctx->ctx_export->fullpath,
@@ -600,30 +598,25 @@ fsal_status_t vfs_create_export(struct fsal_module *fsal_hdl,
 			op_ctx->ctx_export->fullpath,
 			strerror(retval), retval);
 		fsal_status = posix2fsal_status(retval);
-		goto errout;
+		goto err_cleanup;
 	}
 
 	retval = vfs_sub_init_export(myself);
 	if (retval != 0) {
 		fsal_status = posix2fsal_status(retval);
-		goto errout;
+		goto err_cleanup;
 	}
 
 	op_ctx->fsal_export = &myself->export;
 
-	/* Stack MDCACHE on top */
-	fsal_status = mdcache_export_init(up_ops, &myself->export.up_ops);
-	if (FSAL_IS_ERROR(fsal_status)) {
-		LogDebug(COMPONENT_FSAL, "MDCACHE creation failed for PSEUDO");
-		goto errout;
-	}
+	myself->export.up_ops = up_ops;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
- errout:
-
+err_cleanup:
 	vfs_unexport_filesystems(myself);
-
+	fsal_detach_export(fsal_hdl, &myself->export.exports);
+err_free:
 	free_export_ops(&myself->export);
 	gsh_free(myself);	/* elvis has left the building */
 	return fsal_status;

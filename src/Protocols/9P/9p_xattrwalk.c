@@ -57,7 +57,7 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	size_t attrsize = 0;
 
 	fsal_status_t fsal_status;
-	char name[MAXNAMLEN];
+	char name[MAXNAMLEN+1];
 	fsal_xattrent_t xattrs_arr[XATTRS_ARRAY_LEN];
 	int eod_met = false;
 	unsigned int nb_xattrs_read = 0;
@@ -100,6 +100,13 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		return _9p_rerror(req9p, msgtag, EIO, plenout, preply);
 	}
 
+	if (*name_len >= sizeof(name)) {
+		LogDebug(COMPONENT_9P, "request with name too long (%u)",
+			 *name_len);
+		return _9p_rerror(req9p, msgtag, ENAMETOOLONG, plenout,
+				  preply);
+	}
+
 	pxattrfid = gsh_calloc(1, sizeof(struct _9p_fid));
 
 	/* set op_ctx, it will be useful if FSAL is later called */
@@ -111,7 +118,7 @@ int _9p_xattrwalk(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	memcpy((char *)pxattrfid, (char *)pfid, sizeof(struct _9p_fid));
 	pxattrfid->state = NULL;
 
-	snprintf(name, MAXNAMLEN, "%.*s", *name_len, name_str);
+	snprintf(name, sizeof(name), "%.*s", *name_len, name_str);
 
 	pxattrfid->specdata.xattr.xattr_content = gsh_malloc(XATTR_BUFFERSIZE);
 

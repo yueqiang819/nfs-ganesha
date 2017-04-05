@@ -78,23 +78,10 @@ pseudofs_i_cmpf(const struct avltree_node *lhs,
 }
 
 static inline struct avltree_node *
-avltree_inline_name_lookup(
-	const struct avltree_node *key,
-	const struct avltree *tree)
+avltree_inline_name_lookup(const struct avltree_node *key,
+			   const struct avltree *tree)
 {
-	struct avltree_node *node = tree->root;
-	int res = 0;
-
-	while (node) {
-		res = pseudofs_n_cmpf(node, key);
-		if (res == 0)
-			return node;
-		if (res > 0)
-			node = node->left;
-		else
-			node = node->right;
-	}
-	return NULL;
+	return avltree_inline_lookup(key, tree, pseudofs_n_cmpf);
 }
 
 /**
@@ -276,6 +263,7 @@ static struct pseudo_fsal_obj_handle
 
 	/* Set the mask at the end. */
 	hdl->attributes.valid_mask = ATTRS_POSIX;
+	hdl->attributes.supported = ATTRS_POSIX;
 
 	fsal_obj_handle_init(&hdl->obj_handle, exp_hdl, DIRECTORY);
 	pseudofs_handle_ops_init(&hdl->obj_handle.obj_ops);
@@ -285,12 +273,12 @@ static struct pseudo_fsal_obj_handle
 	hdl->next_i = 2;
 	if (parent != NULL) {
 		/* Attach myself to my parent */
-		PTHREAD_RWLOCK_wrlock(&parent->obj_handle.lock);
+		PTHREAD_RWLOCK_wrlock(&parent->obj_handle.obj_lock);
 		avltree_insert(&hdl->avl_n, &parent->avl_name);
 		hdl->index = (parent->next_i)++;
 		avltree_insert(&hdl->avl_i, &parent->avl_index);
 		hdl->inavl = true;
-		PTHREAD_RWLOCK_unlock(&parent->obj_handle.lock);
+		PTHREAD_RWLOCK_unlock(&parent->obj_handle.obj_lock);
 	}
 	return hdl;
 
@@ -328,7 +316,7 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	 * this directory.
 	 */
 	if (op_ctx->fsal_private != parent)
-		PTHREAD_RWLOCK_rdlock(&parent->lock);
+		PTHREAD_RWLOCK_rdlock(&parent->obj_lock);
 	else
 		LogFullDebug(COMPONENT_FSAL,
 			     "Skipping lock for %s",
@@ -363,7 +351,7 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 out:
 
 	if (op_ctx->fsal_private != parent)
-		PTHREAD_RWLOCK_unlock(&parent->lock);
+		PTHREAD_RWLOCK_unlock(&parent->obj_lock);
 
 	if (error == ERR_FSAL_NO_ERROR && attrs_out != NULL) {
 		/* This is unlocked, however, for the most part, attributes
@@ -461,7 +449,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 	struct avltree_node *node;
 	fsal_cookie_t seekloc;
 	struct attrlist attrs;
-	bool cb_rc;
+	enum fsal_dir_result cb_rc;
 
 	if (whence != NULL)
 		seekloc = *whence;
@@ -478,7 +466,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 		 "hdl=%p, name=%s",
 		 myself, myself->name);
 
-	PTHREAD_RWLOCK_rdlock(&dir_hdl->lock);
+	PTHREAD_RWLOCK_rdlock(&dir_hdl->obj_lock);
 
 	/* Use fsal_private to signal to lookup that we hold
 	 * the lock.
@@ -499,11 +487,11 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 		fsal_copy_attrs(&attrs, &hdl->attributes, false);
 
 		cb_rc = cb(hdl->name, &hdl->obj_handle, &attrs,
-			   dir_state, hdl->index);
+			   dir_state, hdl->index + 1, NULL);
 
 		fsal_release_attrs(&attrs);
 
-		if (!cb_rc) {
+		if (cb_rc >= DIR_TERMINATE) {
 			*eof = false;
 			break;
 		}
@@ -511,7 +499,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 
 	op_ctx->fsal_private = NULL;
 
-	PTHREAD_RWLOCK_unlock(&dir_hdl->lock);
+	PTHREAD_RWLOCK_unlock(&dir_hdl->obj_lock);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -565,7 +553,7 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *dir_hdl,
 			      struct pseudo_fsal_obj_handle,
 			      obj_handle);
 
-	PTHREAD_RWLOCK_wrlock(&dir_hdl->lock);
+	PTHREAD_RWLOCK_wrlock(&dir_hdl->obj_lock);
 
 	/* Check if directory is empty */
 	numlinks = atomic_fetch_uint32_t(&hdl->numlinks);
@@ -591,7 +579,7 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *dir_hdl,
 	error = ERR_FSAL_NO_ERROR;
 
 unlock:
-	PTHREAD_RWLOCK_unlock(&dir_hdl->lock);
+	PTHREAD_RWLOCK_unlock(&dir_hdl->obj_lock);
 
 	return fsalstat(error, 0);
 }

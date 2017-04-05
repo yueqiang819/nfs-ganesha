@@ -124,7 +124,13 @@ NFS_CORE_PARAM {}
 
 	Enable_RQUOTA(bool, default true)
 
-	Enable_TCP_keepalive(bool, default false)
+	Enable_TCP_keepalive(bool, default true)
+
+	TCP_KEEPCNT(UINT32, range 0 to 255, default 0 -> use system defaults)
+
+	TCP_KEEPIDLE(UINT32, range 0 to 65535, default 0 -> use system defautls)
+
+	TCP_KEEPINTVL(INT32, range 0 to 65535, default 0 -> use system defaults)
 
 	Enable_Fast_Stats(bool, default false)
 
@@ -135,6 +141,10 @@ NFS_CORE_PARAM {}
 	Plugins_Dir(path, default "/usr/lib64/ganesha")
 
 	heartbeat_freq(uint32, range 0 to 5000 default 1000)
+
+	fsid_device(bool, default false)
+
+	mount_path_pseudo(bool, default false)
 
 NFS_IP_NAME {}
 --------------
@@ -309,6 +319,20 @@ EXPORT { FSAL {} }
 
 	Name(string, default "VFS")
 
+	FSAL_CEPH:
+	----------
+	User_Id(string, no default)
+
+	* User_Id: cephx userid used to open the MDS session. This string is
+	  what gets appended to "client.". If not set, the ceph client libs
+	  will sort this out based on ceph configuration.
+
+	Secret_Access_Key(string, no default)
+
+	* Secret_Access_Key: key to use for the session (if any). If not set,
+	  then it uses the normal search path for cephx keyring files to find
+	  a key.
+
 	FSAL_GLUSTER:
 	-------------
 
@@ -454,6 +478,10 @@ CACHEINODE
 
 	Dir_Max_Deleted(uint32, range 1 to UINT32_MAX, default 65536)
 
+	Dir_Max(uint32, range 1 to UINT32_MAX, default 65536)
+
+	Dir_Chunk(uint32, range 0 to UINT32_MAX, default 128)
+
 	Entries_HWMark(uint32, range 1 to UINT32_MAX, default 100000)
 
 	LRU_Run_Interval(uint32, range 1 to 24 * 3600, default 90)
@@ -497,6 +525,10 @@ CEPH {}
 -------
 
 	Ceph_Conf(path, default "")
+
+	umask(mode, range 0 to 0777, default 0)
+
+	xattr_access_rights(mode, range 0 to 0777, default 0)
 
 GPFS {}
 -------
@@ -659,7 +691,7 @@ PROXY { Remote_Server {} }
 					to FSAL_MAXIOSIZE,
 		     default MAX_READ_WRITE_SIZE + SEND_RECV_HEADER_SPACE)
 
-	NFS_Port(inet_port, range 0 to UINT16_MAX, default 2049)
+	NFS_Port(uint16, range 0 to UINT16_MAX, default 2049)
 
 	Use_Privileged_Client_Port(bool, default false)
 

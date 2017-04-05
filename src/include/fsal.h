@@ -261,7 +261,7 @@ enum cb_state {
 	CB_PROBLEM,
 };
 
-typedef fsal_errors_t (*fsal_getattr_cb_t)
+typedef fsal_errors_t (*helper_readdir_cb)
 	(void *opaque,
 	 struct fsal_obj_handle *obj,
 	 const struct attrlist *attr,
@@ -305,10 +305,27 @@ struct fsal_readdir_cb_parms {
 fsal_status_t fsal_setattr(struct fsal_obj_handle *obj, bool bypass,
 			   struct state_t *state, struct attrlist *attr);
 
+/**
+ *
+ * @brief Checks the permissions on an object
+ *
+ * This function returns success if the supplied credentials possess
+ * permission required to meet the specified access.
+ *
+ * @param[in]  obj         The object to be checked
+ * @param[in]  access_type The kind of access to be checked
+ *
+ * @return FSAL status
+ *
+ */
+static inline
 fsal_status_t fsal_access(struct fsal_obj_handle *obj,
-			  fsal_accessflags_t access_type,
-			  fsal_accessflags_t *allowed,
-			  fsal_accessflags_t *denied);
+			  fsal_accessflags_t access_type)
+{
+	return
+	    obj->obj_ops.test_access(obj, access_type, NULL, NULL, false);
+}
+
 fsal_status_t fsal_link(struct fsal_obj_handle *obj,
 			struct fsal_obj_handle *dest_dir,
 			const char *name);
@@ -359,7 +376,7 @@ fsal_status_t fsal_rdwr(struct fsal_obj_handle *obj,
 		      bool *sync, struct io_info *info);
 fsal_status_t fsal_readdir(struct fsal_obj_handle *directory, uint64_t cookie,
 			   unsigned int *nbfound, bool *eod_met,
-			   attrmask_t attrmask, fsal_getattr_cb_t cb,
+			   attrmask_t attrmask, helper_readdir_cb cb,
 			   void *opaque);
 fsal_status_t fsal_remove(struct fsal_obj_handle *parent, const char *name);
 fsal_status_t fsal_rename(struct fsal_obj_handle *dir_src,
@@ -558,9 +575,6 @@ enum fsal_create_mode nfs3_createmode_to_fsal(createmode3 createmode)
  *
  * The caller may pass FSAL_O_ANY to indicate any mode of open (RDONLY,
  * WRONLY, or RDWR is useable - often just to fetch attributes or something).
- *
- * Note that FSAL_O_SYNC is considered by this function, so the caller
- * expects the fd to be considered not usable if O_SYNC doesn't match.
  *
  * @param[in] fd_openflags The openflags describing the fd
  * @param[in] to_openflags The openflags describing the desired mode

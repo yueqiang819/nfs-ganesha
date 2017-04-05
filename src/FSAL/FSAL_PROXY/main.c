@@ -94,8 +94,8 @@ static struct config_item proxy_remote_params[] = {
 		       FSAL_MAXIOSIZE,
 		       DEFAULT_MAX_WRITE_READ + SEND_RECV_HEADER_SPACE,
 		       pxy_client_params, srv_recvsize),
-	CONF_ITEM_INET_PORT("NFS_Port", 0, UINT16_MAX, 2049,
-			    pxy_client_params, srv_port),
+	CONF_ITEM_UI16("NFS_Port", 0, UINT16_MAX, 2049,
+		       pxy_client_params, srv_port),
 	CONF_ITEM_BOOL("Use_Privileged_Client_Port", false,
 		       pxy_client_params, use_privileged_client_port),
 	CONF_ITEM_UI32("RPC_Client_Timeout", 1, 60*4, 60,
@@ -227,6 +227,11 @@ static fsal_status_t pxy_init_config(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+static bool pxy_support_ex(struct fsal_obj_handle *obj)
+{
+	return true;
+}
+
 static struct pxy_fsal_module PROXY;
 
 MODULE_INIT void pxy_init(void)
@@ -236,6 +241,7 @@ MODULE_INIT void pxy_init(void)
 		return;
 	PROXY.module.m_ops.init_config = pxy_init_config;
 	PROXY.module.m_ops.create_export = pxy_create_export;
+	PROXY.module.m_ops.support_ex = pxy_support_ex;
 }
 
 MODULE_FINI void pxy_unload(void)

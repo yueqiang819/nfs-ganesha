@@ -575,7 +575,7 @@ static inline bool owner_has_state(state_owner_t *owner)
 	/* If the owner is on the cached owners list, there can't be
 	 * active state.
 	 */
-	if (atomic_fetch_time_t(&nfs4_owner->cache_expire) != 0)
+	if (atomic_fetch_time_t(&nfs4_owner->so_cache_expire) != 0)
 		return false;
 
 	PTHREAD_MUTEX_lock(&owner->so_mutex);
@@ -696,51 +696,38 @@ static inline void *convert_lock_owner(struct fsal_export *fsal_export,
  *
  ******************************************************************************/
 
-state_status_t state_add_impl(struct fsal_obj_handle *obj,
-			      enum state_type state_type,
-			      union state_data *state_data,
-			      state_owner_t *owner_input, state_t **state,
-			      struct state_refer *refer);
+#define state_add_impl(o, t, d, i, s, r) \
+	_state_add_impl(o, t, d, i, s, r, __func__, __LINE__)
+state_status_t _state_add_impl(struct fsal_obj_handle *obj,
+			       enum state_type state_type,
+			       union state_data *state_data,
+			       state_owner_t *owner_input, state_t **state,
+			       struct state_refer *refer,
+			       const char *func, int line);
 
-state_status_t state_add(struct fsal_obj_handle *obj,
-			 enum state_type state_type,
-			 union state_data *state_data,
-			 state_owner_t *owner_input,
-			 state_t **state, struct state_refer *refer);
+#define state_add(o, t, d, i, s, r) \
+	_state_add(o, t, d, i, s, r, __func__, __LINE__)
+state_status_t _state_add(struct fsal_obj_handle *obj,
+			  enum state_type state_type,
+			  union state_data *state_data,
+			  state_owner_t *owner_input,
+			  state_t **state, struct state_refer *refer,
+			  const char *func, int line);
 
 state_status_t state_set(state_t *state);
 
-void state_del_locked(state_t *state);
+#define state_del_locked(s) _state_del_locked(s, __func__, __LINE__)
+void _state_del_locked(state_t *state, const char *func, int line);
 
 void state_del(state_t *state);
 
 static inline struct fsal_obj_handle *get_state_obj_ref(state_t *state)
 {
-	struct fsal_obj_handle *obj = NULL;
-	fsal_status_t fsal_status;
-	struct gsh_buffdesc fh_desc;
-	struct gsh_export *save_exp = op_ctx->ctx_export;
-	struct fsal_export *save_fsal = op_ctx->fsal_export;
-
-	if (state->state_export == NULL)
+	if (!state->state_obj)
 		return NULL;
 
-	/* Need to look up in the correct export */
-	op_ctx->ctx_export = state->state_export;
-	op_ctx->fsal_export = state->state_export->fsal_export;
-
-	fh_desc.addr = state->state_obj.digest;
-	fh_desc.len = state->state_obj.len;
-	fsal_status =
-	  state->state_export->fsal_export->exp_ops.create_handle(
-		state->state_export->fsal_export, &fh_desc, &obj, NULL);
-
-	op_ctx->ctx_export = save_exp;
-	op_ctx->fsal_export = save_fsal;
-
-	if (FSAL_IS_ERROR(fsal_status))
-		return NULL;
-	return obj;
+	state->state_obj->obj_ops.get_ref(state->state_obj);
+	return state->state_obj;
 }
 
 static inline struct gsh_export *get_state_export_ref(state_t *state)
@@ -1009,8 +996,6 @@ void blocked_lock_polling(struct fridgethr_context *ctx);
 
 void nfs4_start_grace(nfs_grace_start_t *gsp);
 int nfs_in_grace(void);
-void nfs4_create_clid_name(nfs_client_record_t *, nfs_client_id_t *,
-			   struct svc_req *);
 void nfs4_add_clid(nfs_client_id_t *);
 void nfs4_rm_clid(const char *, char *, int);
 void nfs4_chk_clid(nfs_client_id_t *);

@@ -38,7 +38,6 @@
 #include "abstract_mem.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
-#include "mdcache.h"
 
 static const char *module_name = "RGW";
 
@@ -67,6 +66,7 @@ static struct fsal_staticfsinfo_t default_rgw_info = {
 	.maxread = FSAL_MAXIOSIZE,
 	.maxwrite = FSAL_MAXIOSIZE,
 	.umask = 0,
+	.rename_changes_key = true,
 };
 
 static struct config_item rgw_items[] = {
@@ -159,11 +159,11 @@ bool support_ex(struct fsal_obj_handle *obj)
 
 static struct config_item export_params[] = {
 	CONF_ITEM_NOOP("name"),
-	CONF_ITEM_STR("user_id", 0, MAXUIDLEN, NULL,
+	CONF_MAND_STR("user_id", 0, MAXUIDLEN, NULL,
 		      rgw_export, rgw_user_id),
-	CONF_ITEM_STR("access_key_id", 0, MAXKEYLEN, NULL,
+	CONF_MAND_STR("access_key_id", 0, MAXKEYLEN, NULL,
 		      rgw_export, rgw_access_key_id),
-	CONF_ITEM_STR("secret_access_key", 0, MAXSECRETLEN, NULL,
+	CONF_MAND_STR("secret_access_key", 0, MAXSECRETLEN, NULL,
 		      rgw_export, rgw_secret_access_key),
 	CONFIG_EOL
 };
@@ -252,6 +252,8 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 				gsh_free(conf_path);
 			if (inst_name)
 				gsh_free(inst_name);
+			if (cluster)
+				gsh_free(cluster);
 		}
 		PTHREAD_MUTEX_unlock(&init_mtx);
 	}
@@ -280,6 +282,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 					   export,
 					   true,
 					   err_type);
+
 		if (rc != 0) {
 			gsh_free(export);
 			return fsalstat(ERR_FSAL_INVAL, 0);
@@ -299,6 +302,11 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		LogCrit(COMPONENT_FSAL,
 			"Unable to mount RGW cluster for %s.",
 			op_ctx->ctx_export->fullpath);
+		if (rgw_status == -EINVAL) {
+			LogCrit(COMPONENT_FSAL,
+			"Authorization Failed for user %s ",
+			export->rgw_user_id);
+		}
 		goto error;
 	}
 
@@ -306,6 +314,15 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 		status.major = ERR_FSAL_SERVERFAULT;
 		LogCrit(COMPONENT_FSAL,
 			"Unable to attach export for %s.",
+			op_ctx->ctx_export->fullpath);
+		goto error;
+	}
+
+	if (rgw_register_invalidate(export->rgw_fs, rgw_fs_invalidate,
+					up_ops->up_export,
+					RGW_REG_INVALIDATE_FLAG_NONE) != 0) {
+		LogCrit(COMPONENT_FSAL,
+			"Unable to register invalidates for %s.",
 			op_ctx->ctx_export->fullpath);
 		goto error;
 	}
@@ -329,12 +346,8 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 
 	op_ctx->fsal_export = &export->export;
 
-	/* Stack MDCACHE on top */
-	status = mdcache_export_init(up_ops, &export->export.up_ops);
-	if (FSAL_IS_ERROR(status)) {
-		LogDebug(COMPONENT_FSAL, "MDCACHE creation failed for RGW");
-		goto error;
-	}
+	export->root = handle;
+	export->export.up_ops = up_ops;
 
 	return status;
 

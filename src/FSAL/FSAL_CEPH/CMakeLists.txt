@@ -10,11 +10,20 @@ SET(fsalceph_LIB_SRCS
    ds.c
    internal.c
    internal.h
+   statx_compat.h
 )
+
+if (NOT CEPH_FS_CEPH_STATX)
+  SET(fsalceph_LIB_SRCS
+	${fsalceph_LIB_SRCS}
+	statx_compat.c
+     )
+endif(NOT CEPH_FS_CEPH_STATX)
 
 include_directories(${CEPHFS_INCLUDE_DIR})
 
-add_library(fsalceph SHARED ${fsalceph_LIB_SRCS})
+add_library(fsalceph MODULE ${fsalceph_LIB_SRCS})
+add_sanitizers(fsalceph)
 
 target_link_libraries(fsalceph ${CEPHFS_LIBRARIES} ${SYSTEM_LIBRARIES})
 

@@ -140,8 +140,7 @@ int compare_nlm_state(state_t *state1, state_t *state2)
 	return state1->state_type != state2->state_type ||
 	       state1->state_owner != state2->state_owner ||
 	       state1->state_export != state2->state_export ||
-	       memcmp(&state1->state_obj, &state2->state_obj,
-		      sizeof(state1->state_obj));
+	       state1->state_obj != state2->state_obj;
 }
 
 /**
@@ -347,7 +346,7 @@ void dec_nlm_state_ref(state_t *state)
 		(void) obj->obj_ops.close2(obj, state);
 	}
 
-	state->state_exp->exp_ops.free_state(state);
+	state->state_exp->exp_ops.free_state(state->state_exp, state);
 
 	/* Release 2 refs: our sentinal one, plus the one from
 	 * get_state_obj_ref() */
@@ -390,12 +389,7 @@ int get_nlm_state(enum state_type state_type,
 	key.state_owner = state_owner;
 	key.state_export = op_ctx->ctx_export;
 	key.state_seqid = nsm_state;
-	/* Temporarily use buffkey */
-	buffkey.addr = &key.state_obj.digest;
-	buffkey.len = sizeof(key.state_obj.digest);
-	state_obj->obj_ops.handle_digest(state_obj, FSAL_DIGEST_NFSV4,
-					 &buffkey);
-	key.state_obj.len = buffkey.len;
+	key.state_obj = state_obj;
 
 	if (isFullDebug(COMPONENT_STATE)) {
 		display_nlm_state(&dspbuf, &key);
@@ -475,12 +469,12 @@ int get_nlm_state(enum state_type state_type,
 							 NULL);
 
 	/* Copy everything over */
-	memcpy(&state->state_obj, &key.state_obj, sizeof(state->state_obj));
+	state->state_obj = state_obj;
 	state->state_owner = state_owner;
 	state->state_export = op_ctx->ctx_export;
 	state->state_seqid = nsm_state;
 
-	assert(pthread_mutex_init(&state->state_mutex, NULL) == 0);
+	PTHREAD_MUTEX_init(&state->state_mutex, NULL);
 
 	if (state_type == STATE_TYPE_NLM_LOCK)
 		glist_init(&state->state_data.lock.state_locklist);
@@ -509,12 +503,12 @@ int get_nlm_state(enum state_type state_type,
 		LogCrit(COMPONENT_STATE, "Error %s, inserting {%s}",
 			hash_table_err_to_str(rc), str);
 
-		assert(pthread_mutex_destroy(&state->state_mutex) == 0);
+		PTHREAD_MUTEX_destroy(&state->state_mutex);
 
 		/* Free the ref taken above and the state.
 		 * No need to close here, the state was never opened.
 		 */
-		state->state_exp->exp_ops.free_state(state);
+		state->state_exp->exp_ops.free_state(state->state_exp, state);
 		state_obj->obj_ops.put_ref(state_obj);
 
 		*pstate = NULL;

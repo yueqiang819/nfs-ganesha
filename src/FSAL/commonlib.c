@@ -64,6 +64,7 @@
 #ifdef HAVE_MNTENT_H
 #include <mntent.h>
 #endif
+#include "gsh_config.h"
 #include "gsh_list.h"
 #ifdef USE_BLKID
 #include <blkid/blkid.h>
@@ -177,7 +178,7 @@ void fsal_obj_handle_init(struct fsal_obj_handle *obj, struct fsal_export *exp,
 		&attrs,
 		PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
 #endif
-	PTHREAD_RWLOCK_init(&obj->lock, &attrs);
+	PTHREAD_RWLOCK_init(&obj->obj_lock, &attrs);
 
 	PTHREAD_RWLOCK_wrlock(&obj->fsal->lock);
 	glist_add(&obj->fsal->handles, &obj->handles);
@@ -189,7 +190,7 @@ void fsal_obj_handle_fini(struct fsal_obj_handle *obj)
 	PTHREAD_RWLOCK_wrlock(&obj->fsal->lock);
 	glist_del(&obj->handles);
 	PTHREAD_RWLOCK_unlock(&obj->fsal->lock);
-	PTHREAD_RWLOCK_destroy(&obj->lock);
+	PTHREAD_RWLOCK_destroy(&obj->obj_lock);
 	memset(&obj->obj_ops, 0, sizeof(obj->obj_ops));	/* poison myself */
 	obj->fsal = NULL;
 }
@@ -373,6 +374,25 @@ const char *msg_fsal_err(fsal_errors_t fsal_err)
 	return "Unknown FSAL error";
 }
 
+const char *fsal_dir_result_str(enum fsal_dir_result result)
+{
+	switch (result) {
+	case DIR_CONTINUE:
+		return "DIR_CONTINUE";
+
+	case DIR_CONTINUE_MARK:
+		return "DIR_CONTINUE_MARK";
+
+	case DIR_TERMINATE:
+		return "DIR_TERMINATE";
+
+	case DIR_TERMINATE_MARK:
+		return "DIR_TERMINATE_MARK";
+	}
+
+	return "<unknown>";
+}
+
 /**
  * @brief Dump and fsal_staticfsinfo_t to a log
  *
@@ -441,23 +461,27 @@ int display_attrlist(struct display_buffer *dspbuf,
 	int b_left = display_start(dspbuf);
 
 	if (b_left > 0 && attr->request_mask != 0)
-		b_left = display_printf(dspbuf, "Mask = %08x",
+		b_left = display_printf(dspbuf, "Request Mask=%08x ",
 					(unsigned int) attr->request_mask);
 
 	if (b_left > 0 && attr->valid_mask != 0)
-		b_left = display_printf(dspbuf, "Mask = %08x",
+		b_left = display_printf(dspbuf, "Valid Mask=%08x ",
+					(unsigned int) attr->valid_mask);
+
+	if (b_left > 0 && attr->supported != 0)
+		b_left = display_printf(dspbuf, "Supported Mask=%08x ",
 					(unsigned int) attr->valid_mask);
 
 	if (b_left > 0 && is_obj)
-		b_left = display_printf(dspbuf, " %s",
+		b_left = display_printf(dspbuf, "%s",
 					object_file_type_to_str(attr->type));
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_NUMLINKS))
-		b_left = display_printf(dspbuf, " numlinks=0x%"PRIu32,
+		b_left = display_printf(dspbuf, " numlinks=0x%"PRIx32,
 					attr->numlinks);
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_SIZE))
-		b_left = display_printf(dspbuf, " size=0x%"PRIu64,
+		b_left = display_printf(dspbuf, " size=0x%"PRIx64,
 					attr->filesize);
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_MODE))
@@ -465,11 +489,11 @@ int display_attrlist(struct display_buffer *dspbuf,
 					attr->mode);
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_OWNER))
-		b_left = display_printf(dspbuf, " owner=0x%"PRIu64,
+		b_left = display_printf(dspbuf, " owner=0x%"PRIx64,
 					attr->owner);
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_GROUP))
-		b_left = display_printf(dspbuf, " group=0x%"PRIu64,
+		b_left = display_printf(dspbuf, " group=0x%"PRIx64,
 					attr->group);
 
 	if (b_left > 0 && FSAL_TEST_MASK(attr->valid_mask, ATTR_ATIME_SERVER))
@@ -675,21 +699,14 @@ fsal_fs_cmpf_fsid(const struct avltree_node *lhs,
 static inline struct fsal_filesystem *
 avltree_inline_fsid_lookup(const struct avltree_node *key)
 {
-	struct avltree_node *node = avl_fsid.root;
-	int res = 0;
+	struct avltree_node *node = avltree_inline_lookup(key, &avl_fsid,
+							  fsal_fs_cmpf_fsid);
 
-	while (node) {
-		res = fsal_fs_cmpf_fsid(node, key);
-		if (res == 0)
-			return avltree_container_of(node,
-						    struct fsal_filesystem,
-						    avl_fsid);
-		if (res > 0)
-			node = node->left;
-		else
-			node = node->right;
-	}
-	return NULL;
+	if (node != NULL)
+		return avltree_container_of(node, struct fsal_filesystem,
+					    avl_fsid);
+	else
+		return NULL;
 }
 
 static inline int
@@ -719,21 +736,14 @@ fsal_fs_cmpf_dev(const struct avltree_node *lhs,
 static inline struct fsal_filesystem *
 avltree_inline_dev_lookup(const struct avltree_node *key)
 {
-	struct avltree_node *node = avl_dev.root;
-	int res = 0;
+	struct avltree_node *node = avltree_inline_lookup(key, &avl_dev,
+							  fsal_fs_cmpf_dev);
 
-	while (node) {
-		res = fsal_fs_cmpf_dev(node, key);
-		if (res == 0)
-			return avltree_container_of(node,
-						    struct fsal_filesystem,
-						    avl_dev);
-		if (res > 0)
-			node = node->left;
-		else
-			node = node->right;
-	}
-	return NULL;
+	if (node != NULL)
+		return avltree_container_of(node, struct fsal_filesystem,
+					    avl_dev);
+	else
+		return NULL;
 }
 
 void remove_fs(struct fsal_filesystem *fs)
@@ -941,19 +951,17 @@ static bool posix_get_fsid(struct fsal_filesystem *fs)
 	struct statfs stat_fs;
 	struct stat mnt_stat;
 #ifdef USE_BLKID
-	char *dev_name = NULL, *uuid_str;
-	struct blkid_struct_dev *dev;
+	char *dev_name;
+	char *uuid_str;
 #endif
 
-	LogFullDebug(COMPONENT_FSAL,
-		     "statfs of %s pathlen %d",
-		     fs->path, fs->pathlen);
+	LogFullDebug(COMPONENT_FSAL, "statfs of %s pathlen %d", fs->path,
+		     fs->pathlen);
 
-	if (statfs(fs->path, &stat_fs) != 0) {
+	if (statfs(fs->path, &stat_fs) != 0)
 		LogCrit(COMPONENT_FSAL,
 			"stat_fs of %s resulted in error %s(%d)",
 			fs->path, strerror(errno), errno);
-	}
 
 #if __FreeBSD__
 	fs->namelen = stat_fs.f_namemax;
@@ -970,67 +978,58 @@ static bool posix_get_fsid(struct fsal_filesystem *fs)
 
 	fs->dev = posix2fsal_devt(mnt_stat.st_dev);
 
+	if (nfs_param.core_param.fsid_device) {
+		fs->fsid_type = FSID_DEVICE;
+		fs->fsid.major = fs->dev.major;
+		fs->fsid.minor = fs->dev.minor;
+		return true;
+	}
+
 #ifdef USE_BLKID
+	if (cache == NULL)
+		goto out;
+
 	dev_name = blkid_devno_to_devname(mnt_stat.st_dev);
 
 	if (dev_name == NULL) {
 		LogInfo(COMPONENT_FSAL,
 			"blkid_devno_to_devname of %s failed for dev %d.%d",
-			fs->path,
-			major(mnt_stat.st_dev),
+			fs->path, major(mnt_stat.st_dev),
 			minor(mnt_stat.st_dev));
-		goto no_uuid_no_dev_name;
+		goto out;
 	}
 
-	if (cache == NULL && blkid_get_cache(&cache, NULL) != 0) {
-		LogInfo(COMPONENT_FSAL,
-			"blkid_get_cache of %s failed",
-			fs->path);
-		goto no_uuid;
-	}
-
-	dev = (struct blkid_struct_dev *)blkid_get_dev(cache,
-						       dev_name,
-						       BLKID_DEV_NORMAL);
-
-	if (dev == NULL) {
+	if (blkid_get_dev(cache, dev_name, BLKID_DEV_NORMAL) == NULL) {
 		LogInfo(COMPONENT_FSAL,
 			"blkid_get_dev of %s failed for devname %s",
 			fs->path, dev_name);
-		goto no_uuid;
+		free(dev_name);
+		goto out;
 	}
 
 	uuid_str = blkid_get_tag_value(cache, "UUID", dev_name);
+	free(dev_name);
 
 	if  (uuid_str == NULL) {
-		LogInfo(COMPONENT_FSAL,
-			"blkid_get_tag_value of %s failed",
+		LogInfo(COMPONENT_FSAL, "blkid_get_tag_value of %s failed",
 			fs->path);
-		goto no_uuid;
+		goto out;
 	}
 
 	if (uuid_parse(uuid_str, (char *) &fs->fsid) == -1) {
-		LogInfo(COMPONENT_FSAL,
-			"uuid_parse of %s failed for uuid %s",
+		LogInfo(COMPONENT_FSAL, "uuid_parse of %s failed for uuid %s",
 			fs->path, uuid_str);
 		free(uuid_str);
-		goto no_uuid;
+		goto out;
 	}
 
 	free(uuid_str);
 	fs->fsid_type = FSID_TWO_UINT64;
-	free(dev_name);
 
 	return true;
 
- no_uuid:
-
-	free(dev_name);
-
- no_uuid_no_dev_name:
-
+out:
 #endif
-
 	fs->fsid_type = FSID_TWO_UINT32;
 #if __FreeBSD__
 	fs->fsid.major = (unsigned) stat_fs.f_fsid.val[0];
@@ -1039,7 +1038,6 @@ static bool posix_get_fsid(struct fsal_filesystem *fs)
 	fs->fsid.major = (unsigned) stat_fs.f_fsid.__val[0];
 	fs->fsid.minor = (unsigned) stat_fs.f_fsid.__val[1];
 #endif
-
 	if ((fs->fsid.major == 0) && (fs->fsid.minor == 0)) {
 		fs->fsid.major = fs->dev.major;
 		fs->fsid.minor = fs->dev.minor;
@@ -1263,24 +1261,31 @@ int populate_posix_file_systems(bool force)
 		goto out;
 	}
 
+#ifdef USE_BLKID
+	if (blkid_get_cache(&cache, NULL) != 0)
+		LogInfo(COMPONENT_FSAL, "blkid_get_cache failed");
+#endif
+
 	while ((mnt = getmntent(fp)) != NULL) {
 		if (mnt->mnt_dir == NULL)
 			continue;
 
 		posix_create_file_system(mnt);
 	}
+
 #ifdef USE_BLKID
-	blkid_put_cache(cache);
+	if (cache) {
+		blkid_put_cache(cache);
+		cache = NULL;
+	}
 #endif
 
 	endmntent(fp);
 
 	/* build tree of POSIX file systems */
-	glist_for_each(glist, &posix_file_systems) {
-		posix_find_parent(glist_entry(glist,
-					      struct fsal_filesystem,
+	glist_for_each(glist, &posix_file_systems)
+		posix_find_parent(glist_entry(glist, struct fsal_filesystem,
 					      filesystems));
-	}
 
 	/* show tree */
 	glist_for_each(glist, &posix_file_systems) {
@@ -1290,7 +1295,6 @@ int populate_posix_file_systems(bool force)
 	}
 
  out:
-
 	PTHREAD_RWLOCK_unlock(&fs_lock);
 	return retval;
 }
@@ -1318,7 +1322,7 @@ int resolve_posix_filesystem(const char *path,
 	/* second attempt to resolve file system with force option in case of
 	 * ganesha isn't during startup.
 	 */
-	if (!init_complete || retval != ENOENT)
+	if (!init_complete || retval != EAGAIN)
 		return retval;
 
 	LogDebug(COMPONENT_FSAL,
@@ -1336,6 +1340,8 @@ int resolve_posix_filesystem(const char *path,
 					 claim, unclaim, root_fs);
 
 	if (retval != 0) {
+		if (retval == EAGAIN)
+			retval = ENOENT;
 		LogCrit(COMPONENT_FSAL,
 			"claim_posix_filesystems(%s) returned %s (%d)",
 			path, strerror(retval), retval);
@@ -1576,7 +1582,7 @@ int claim_posix_filesystems(const char *path,
 
 	/* Check if we found a filesystem */
 	if (root == NULL) {
-		retval = ENOENT;
+		retval = EAGAIN;
 		goto out;
 	}
 
@@ -2427,7 +2433,7 @@ fsal_status_t fsal_reopen_obj(struct fsal_obj_handle *obj_hdl,
 	 * We only take a read lock because we are not changing the
 	 * state of the file descriptor.
 	 */
-	PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 
 	if (check_share) {
 		/* Note we will check again if we drop and re-acquire the lock
@@ -2436,7 +2442,7 @@ fsal_status_t fsal_reopen_obj(struct fsal_obj_handle *obj_hdl,
 		status = check_share_conflict(share, openflags, bypass);
 
 		if (FSAL_IS_ERROR(status)) {
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 			LogDebug(COMPONENT_FSAL,
 				 "check_share_conflict failed with %s",
 				 msg_fsal_err(status.major));
@@ -2465,7 +2471,7 @@ again:
 	if (not_open_usable(my_fd->openflags, openflags)) {
 
 		/* Drop the rwlock */
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		if (retried) {
 			/* This really should never occur, it could occur
@@ -2485,7 +2491,7 @@ again:
 		 * This prevents us from blocking for the duration of an
 		 * I/O request.
 		 */
-		rc = pthread_rwlock_trywrlock(&obj_hdl->lock);
+		rc = pthread_rwlock_trywrlock(&obj_hdl->obj_lock);
 		if (rc == EBUSY) {
 			/* Someone else is using the file descriptor.
 			 * Just provide a temporary file descriptor.
@@ -2494,14 +2500,15 @@ again:
 			 * operation if we needed to check.
 			 */
 			if (check_share) {
-				PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 
 				status = check_share_conflict(share,
 							      openflags,
 							      bypass);
 
 				if (FSAL_IS_ERROR(status)) {
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 					LogDebug(COMPONENT_FSAL,
 						 "check_share_conflict failed with %s",
 						 msg_fsal_err(status.major));
@@ -2514,7 +2521,8 @@ again:
 
 			if (FSAL_IS_ERROR(status)) {
 				if (check_share)
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 				*has_lock = false;
 				return status;
 			}
@@ -2537,7 +2545,7 @@ again:
 			status = check_share_conflict(share, openflags, bypass);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "check_share_conflict failed with %s",
 					 msg_fsal_err(status.major));
@@ -2560,7 +2568,8 @@ again:
 				status = close_func(obj_hdl, my_fd);
 
 				if (FSAL_IS_ERROR(status)) {
-					PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+					PTHREAD_RWLOCK_unlock(
+							&obj_hdl->obj_lock);
 					LogDebug(COMPONENT_FSAL,
 						 "close_func failed with %s",
 						 msg_fsal_err(status.major));
@@ -2581,7 +2590,7 @@ again:
 			status = open_func(obj_hdl, try_openflags, my_fd);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "open_func failed with %s",
 					 msg_fsal_err(status.major));
@@ -2597,15 +2606,15 @@ again:
 		 * Since we dropped the lock, we need to verify mode is still'
 		 * good after we re-aquire the read lock, thus the retry.
 		 */
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
-		PTHREAD_RWLOCK_rdlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
+		PTHREAD_RWLOCK_rdlock(&obj_hdl->obj_lock);
 		retried = true;
 
 		if (check_share) {
 			status = check_share_conflict(share, openflags, bypass);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				LogDebug(COMPONENT_FSAL,
 					 "check_share_conflict failed with %s",
 					 msg_fsal_err(status.major));
@@ -2644,8 +2653,7 @@ again:
  * @param[in]     openflags      Mode for open
  * @param[in]     open_func      Function to open a file descriptor
  * @param[in]     close_func     Function to close a file descriptor
- * @param[out]    has_lock       Indicates that obj_hdl->lock is held read
- * @param[out]    need_fsync     Indicates that the file will need fsync
+ * @param[out]    has_lock       Indicates that obj_hdl->obj_lock is held read
  * @param[out]    closefd        Indicates that file descriptor must be closed
  * @param[in]     open_for_locks Indicates file is open for locks
  *
@@ -2662,7 +2670,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			   fsal_open_func open_func,
 			   fsal_close_func close_func,
 			   bool *has_lock,
-			   bool *need_fsync,
 			   bool *closefd,
 			   bool open_for_locks)
 {
@@ -2687,7 +2694,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 		LogFullDebug(COMPONENT_FSAL, "Use state_fd %p", state_fd);
 		if (out_fd)
 			*out_fd = state_fd;
-		*need_fsync = (openflags & FSAL_O_SYNC) != 0;
 		*has_lock = false;
 		return status;
 	}
@@ -2722,7 +2728,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			LogFullDebug(COMPONENT_FSAL,
 				     "Opened state_fd %p", state_fd);
 			*out_fd = state_fd;
-			*need_fsync = false;
 		}
 
 		*has_lock = false;
@@ -2753,7 +2758,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 			if (out_fd)
 				*out_fd = related_fd;
 
-			*need_fsync = (openflags & FSAL_O_SYNC) != 0;
 			*has_lock = false;
 			return status;
 		}
@@ -2765,11 +2769,6 @@ fsal_status_t fsal_find_fd(struct fsal_fd **out_fd,
 	LogFullDebug(COMPONENT_FSAL,
 		     "Use global fd openflags = %x",
 		     openflags);
-
-	/* We will take the object handle lock in vfs_reopen_obj.
-	 * And we won't have to fsync.
-	 */
-	*need_fsync = false;
 
 	/* Make sure global is open as necessary otherwise return a
 	 * temporary file descriptor. Check share reservation if not

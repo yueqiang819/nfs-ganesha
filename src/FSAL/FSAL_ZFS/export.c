@@ -42,9 +42,7 @@
 #include "zfs_methods.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
-#include "mdcache.h"
 
-libzfswrap_handle_t *p_zhd = NULL;
 size_t i_snapshots = 0;
 snapshot_t *p_snapshots = NULL;
 
@@ -215,8 +213,7 @@ static uint32_t fs_xattr_access_rights(struct fsal_export *exp_hdl)
 /* extract a file handle from a buffer.
  * do verification checks and flag any and all suspicious bits.
  * Return an updated fh_desc into whatever was passed.  The most
- * common behavior, done here is to just reset the length.  There
- * is the option to also adjust the start pointer.
+ * common behavior, done here is to just reset the length.
  */
 
 static fsal_status_t tank_extract_handle(struct fsal_export *exp_hdl,
@@ -362,12 +359,7 @@ fsal_status_t zfs_create_export(struct fsal_module *fsal_hdl,
 	myself->p_vfs = p_snapshots[0].p_vfs;
 	op_ctx->fsal_export = &myself->export;
 
-	/* Stack MDCACHE on top */
-	fsal_status = mdcache_export_init(up_ops, &myself->export.up_ops);
-	if (FSAL_IS_ERROR(fsal_status)) {
-		LogDebug(COMPONENT_FSAL, "MDCACHE creation failed for ZFS");
-		goto err_locked;
-	}
+	myself->export.up_ops = up_ops;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 

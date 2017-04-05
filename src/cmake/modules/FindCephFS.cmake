@@ -29,7 +29,7 @@ if(CEPH_PREFIX)
   find_path(CEPHFS_LIBRARY_DIR
     NAMES libcephfs.so
     PATHS ${CEPH_PREFIX}
-    PATH_SUFFIXES lib lib64
+    PATH_SUFFIXES lib/${CMAKE_LIBRARY_ARCHITECTURE} lib lib64
     NO_DEFAULT_PATH
     DOC "The CephFS libraries")
 endif(CEPH_PREFIX)
@@ -46,7 +46,7 @@ if (NOT CEPHFS_LIBRARY_DIR)
   find_path(CEPHFS_LIBRARY_DIR
     NAMES libcephfs.so
     PATHS ${CEPH_PREFIX}
-    PATH_SUFFIXES lib lib64
+    PATH_SUFFIXES lib/${CMAKE_LIBRARY_ARCHITECTURE} lib lib64
     DOC "The CephFS libraries")
 endif (NOT CEPHFS_LIBRARY_DIR)
 
@@ -77,6 +77,14 @@ else (NOT CEPH_FS)
   else(NOT CEPH_FS_LOOKUP_ROOT)
     set(USE_FSAL_CEPH_LL_LOOKUP_ROOT ON)
   endif(NOT CEPH_FS_LOOKUP_ROOT)
+  set(CMAKE_REQUIRED_INCLUDES ${CEPHFS_INCLUDE_DIR})
+  check_symbol_exists(CEPH_STATX_INO "cephfs/libcephfs.h" CEPH_FS_CEPH_STATX)
+  if(NOT CEPH_FS_CEPH_STATX)
+    message("Cannot find CEPH_STATX_INO. Enabling backward compatibility for pre-ceph_statx APIs.")
+    set(USE_FSAL_CEPH_STATX OFF)
+  else(NOT CEPH_FS_CEPH_STATX)
+    set(USE_FSAL_CEPH_STATX ON)
+  endif(NOT CEPH_FS_CEPH_STATX)
 endif (NOT CEPH_FS)
 
 set(CEPHFS_LIBRARIES ${CEPHFS_LIBRARY})
@@ -94,4 +102,4 @@ mark_as_advanced(CEPHFS_LIBRARY_DIR)
 mark_as_advanced(USE_FSAL_CEPH_MKNOD)
 mark_as_advanced(USE_FSAL_CEPH_SETLK)
 mark_as_advanced(USE_FSAL_CEPH_LL_LOOKUP_ROOT)
-
+mark_as_advanced(USE_FSAL_CEPH_STATX)

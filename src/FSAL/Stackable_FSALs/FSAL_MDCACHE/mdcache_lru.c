@@ -56,6 +56,9 @@
 #include "gsh_intrinsic.h"
 #include "sal_functions.h"
 #include "nfs_exports.h"
+#ifdef USE_LTTNG
+#include "gsh_lttng/mdcache.h"
+#endif
 
 /**
  *
@@ -117,29 +120,27 @@ struct lru_q_lane {
 		struct glist_head *glist;
 		struct glist_head *glistn;
 	} iter;
-#ifdef ENABLE_LOCKTRACE
-	struct {
-		char *func;
-		uint32_t line;
-	} locktrace;
-#endif
 	 CACHE_PAD(0);
 };
 
-#ifdef ENABLE_LOCKTRACE
+#ifdef USE_LTTNG
 #define QLOCK(qlane) \
 	do { \
 		PTHREAD_MUTEX_lock(&(qlane)->mtx); \
-		(qlane)->locktrace.func = (char *) __func__; \
-		(qlane)->locktrace.line = __LINE__; \
+		tracepoint(mdcache, qlock, __func__, __LINE__, qlane); \
+	} while (0)
+
+#define QUNLOCK(qlane) \
+	do { \
+		PTHREAD_MUTEX_unlock(&(qlane)->mtx); \
+		tracepoint(mdcache, qunlock, __func__, __LINE__, qlane); \
 	} while (0)
 #else
 #define QLOCK(qlane) \
 	PTHREAD_MUTEX_lock(&(qlane)->mtx)
-#endif
-
 #define QUNLOCK(qlane) \
 	PTHREAD_MUTEX_unlock(&(qlane)->mtx)
+#endif
 
 /**
  * A multi-level LRU algorithm inspired by MQ [Zhou].  Transition from
@@ -407,17 +408,17 @@ mdcache_lru_clean(mdcache_entry_t *entry)
 {
 	fsal_status_t status = {0, 0};
 
-	/* Make sure any FSAL global file descriptor is closed. */
-	status = fsal_close(&entry->obj_handle);
-
-	if (FSAL_IS_ERROR(status)) {
-		LogCrit(COMPONENT_CACHE_INODE_LRU,
-			"Error closing file in cleanup: %s",
-			fsal_err_txt(status));
-	}
-
 	/* Free SubFSAL resources */
 	if (entry->sub_handle) {
+		/* Make sure any FSAL global file descriptor is closed. */
+		status = fsal_close(&entry->obj_handle);
+
+		if (FSAL_IS_ERROR(status)) {
+			LogCrit(COMPONENT_CACHE_INODE_LRU,
+				"Error closing file in cleanup: %s",
+				fsal_err_txt(status));
+		}
+
 		subcall(
 			entry->sub_handle->obj_ops.release(entry->sub_handle)
 		       );
@@ -503,6 +504,11 @@ lru_reap_impl(enum lru_q_id qid)
 				/* it worked */
 				struct lru_q *q = lru_queue_of(entry);
 
+#ifdef USE_LTTNG
+				tracepoint(mdcache, mdc_lru_reap, __func__,
+					   __LINE__, entry,
+					   entry->lru.refcnt);
+#endif
 				cih_remove_latched(entry, &latch,
 						   CIH_REMOVE_QLOCKED);
 				LRU_DQ_SAFE(lru, q);
@@ -1214,6 +1220,10 @@ mdcache_lru_get(mdcache_entry_t **entry)
 	nentry->lru.cf = 0;
 	nentry->lru.lane = lru_lane_of_entry(nentry);
 
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_lru_ref,
+		   __func__, __LINE__, nentry, nentry->lru.refcnt);
+#endif
 	/* Enqueue. */
 	lru_insert_entry(nentry, &LRU[nentry->lru.lane].L1, LRU_LRU);
 
@@ -1339,17 +1349,21 @@ mdcache_is_noscan(mdcache_entry_t *entry)
  * @return FSAL status
  */
 fsal_status_t
-mdcache_lru_ref(mdcache_entry_t *entry, uint32_t flags)
+_mdcache_lru_ref(mdcache_entry_t *entry, uint32_t flags, const char *func,
+		 int line)
 {
 	mdcache_lru_t *lru = &entry->lru;
 	struct lru_q_lane *qlane = &LRU[lru->lane];
 	struct lru_q *q;
+#ifdef USE_LTTNG
+	int32_t refcnt =
+#endif
+		atomic_inc_int32_t(&entry->lru.refcnt);
 
-	if ((flags & LRU_REQ_INITIAL) == 0)
-		if (lru->flags & LRU_CLEANUP)
-			return fsalstat(ERR_FSAL_STALE, 0);
-
-	(void) atomic_inc_int32_t(&entry->lru.refcnt);
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_lru_ref,
+		   func, line, entry, refcnt);
+#endif
 
 	/* adjust LRU on initial refs */
 	if (flags & LRU_REQ_INITIAL) {
@@ -1404,7 +1418,8 @@ mdcache_lru_ref(mdcache_entry_t *entry, uint32_t flags)
  * @return true if entry freed, false otherwise
  */
 bool
-mdcache_lru_unref(mdcache_entry_t *entry, uint32_t flags)
+_mdcache_lru_unref(mdcache_entry_t *entry, uint32_t flags, const char *func,
+		   int line)
 {
 	int32_t refcnt;
 	bool do_cleanup = false;
@@ -1433,6 +1448,11 @@ mdcache_lru_unref(mdcache_entry_t *entry, uint32_t flags)
 	}
 
 	refcnt = atomic_dec_int32_t(&entry->lru.refcnt);
+
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_lru_unref,
+		   func, line, entry, refcnt);
+#endif
 
 	if (unlikely(refcnt == 0)) {
 
@@ -1500,6 +1520,11 @@ mdcache_lru_putback(mdcache_entry_t *entry, uint32_t flags)
 		 * are LRU_ENTRY_NONE */
 		LRU_DQ_SAFE(&entry->lru, q);
 	}
+
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_lru_unref,
+		   __func__, __LINE__, entry, entry->lru.refcnt);
+#endif
 
 	/* We do NOT call lru_clean_entry, since it was never initialized. */
 	pool_free(mdcache_entry_pool, entry);

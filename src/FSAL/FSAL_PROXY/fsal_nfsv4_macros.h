@@ -105,6 +105,16 @@ do {  \
 	argcompound.argarray.argarray_len += 1;			\
 } while (0)
 
+#define COMPOUNDV4_ARG_ADD_OP_COMPOUND_CLOSE(opcnt, argarray, oo_seqid) \
+do { \
+	nfs_argop4 *op = argarray + opcnt; opcnt++;		\
+	op->argop = NFS4_OP_CLOSE;				\
+	op->nfs_argop4_u.opclose.seqid = oo_seqid;		\
+	op->nfs_argop4_u.opclose.open_stateid.seqid = 1;	\
+	memset(op->nfs_argop4_u.opclose.open_stateid.other, 0,\
+	       sizeof(op->nfs_argop4_u.opclose.open_stateid.other)); \
+} while (0)
+
 #define COMPOUNDV4_ARG_ADD_OP_CLOSE(opcnt, argarray, __stateid, oo_seqid) \
 do { \
 	nfs_argop4 *op = argarray + opcnt; opcnt++;		\
@@ -128,6 +138,14 @@ do { \
 	nfs_argop4 *op = argarray + opcnt; opcnt++;			\
 	op->argop = NFS4_OP_SETATTR;					\
 	memset(&op->nfs_argop4_u.opsetattr.stateid, 0, sizeof(stateid4)); \
+	op->nfs_argop4_u.opsetattr.obj_attributes = inattr;		\
+} while (0)
+
+#define COMPOUNDV4_ARG_ADD_OP_SETATTR_BYPASS(opcnt, argarray, inattr)	\
+do { \
+	nfs_argop4 *op = argarray + opcnt; opcnt++;			\
+	op->argop = NFS4_OP_SETATTR;					\
+	memset(&op->nfs_argop4_u.opsetattr.stateid, 0xff, sizeof(stateid4)); \
 	op->nfs_argop4_u.opsetattr.obj_attributes = inattr;		\
 } while (0)
 
@@ -210,6 +228,22 @@ do { \
 	op->nfs_argop4_u.opreaddir.dircount = 2048;			\
 	op->nfs_argop4_u.opreaddir.maxcount = 4096;			\
 	op->nfs_argop4_u.opreaddir.attr_request = inbitmap;		\
+} while (0)
+
+#define COMPOUNDV4_ARGS_ADD_OP_OPEN(opcnt, args, oo_seqid, __share_access,\
+				    __share_deny, inclientid, __owner_val,\
+				    __owner_len, __openhow, __claim)	\
+do { \
+	nfs_argop4 *op = args + opcnt; opcnt++;				\
+	op->argop = NFS4_OP_OPEN;					\
+	op->nfs_argop4_u.opopen.seqid = oo_seqid;			\
+	op->nfs_argop4_u.opopen.share_access = __share_access;		\
+	op->nfs_argop4_u.opopen.share_deny = __share_deny;		\
+	op->nfs_argop4_u.opopen.owner.clientid = inclientid;		\
+	op->nfs_argop4_u.opopen.owner.owner.owner_len =  __owner_len;	\
+	op->nfs_argop4_u.opopen.owner.owner.owner_val =  __owner_val;	\
+	op->nfs_argop4_u.opopen.openhow = __openhow;			\
+	op->nfs_argop4_u.opopen.claim = __claim;			\
 } while (0)
 
 #define COMPOUNDV4_ARG_ADD_OP_OPEN_CREATE(opcnt, args, inname, inattrs, \
@@ -326,15 +360,33 @@ do { \
 	op->nfs_argop4_u.opread.count  = incount;			\
 } while (0)
 
-#define COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argarray, inoffset, inbuf, inlen) \
+#define COMPOUNDV4_ARG_ADD_OP_READ_BYPASS(opcnt, argarray, inoffset, incount) \
+do { \
+	nfs_argop4 *op = argarray+opcnt; opcnt++;			\
+	op->argop = NFS4_OP_READ;					\
+	memset(&op->nfs_argop4_u.opread.stateid, 0xff, sizeof(stateid4)); \
+	op->nfs_argop4_u.opread.offset = inoffset;			\
+	op->nfs_argop4_u.opread.count  = incount;			\
+} while (0)
+
+#define COMPOUNDV4_ARG_ADD_OP_WRITE(opcnt, argarray, inoffset, inbuf, inlen, \
+				    instable) \
 do { \
 	nfs_argop4 *op = argarray+opcnt; opcnt++;			\
 	op->argop = NFS4_OP_WRITE;					\
-	op->nfs_argop4_u.opwrite.stable = DATA_SYNC4;			\
+	op->nfs_argop4_u.opwrite.stable = instable;			\
 	memset(&op->nfs_argop4_u.opwrite.stateid, 0, sizeof(stateid4));	\
 	op->nfs_argop4_u.opwrite.offset = inoffset;			\
 	op->nfs_argop4_u.opwrite.data.data_val = inbuf;			\
 	op->nfs_argop4_u.opwrite.data.data_len = inlen;			\
+} while (0)
+
+#define COMPOUNDV4_ARG_ADD_OP_COMMIT(opcnt, argoparray, inoffset, inlen) \
+do { \
+	nfs_argop4 *op = argoparray+opcnt; opcnt++;			\
+	op->argop = NFS4_OP_COMMIT;					\
+	op->nfs_argop4_u.opcommit.offset = inoffset;			\
+	op->nfs_argop4_u.opcommit.count = inlen;			\
 } while (0)
 
 #define COMPOUNDV4_EXECUTE_SIMPLE(pcontext, argcompound, rescompound)   \

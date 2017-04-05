@@ -370,6 +370,12 @@ typedef struct nfs_core_param {
 	bool enable_FASTSTATS;
 	/** Whether tcp sockets should use SO_KEEPALIVE */
 	bool enable_tcp_keepalive;
+	/** Maximum number of TCP probes before dropping the connection */
+	uint32_t tcp_keepcnt;
+	/** Idle time before TCP starts to send keepalive probes */
+	uint32_t tcp_keepidle;
+	/** Time between each keepalive probe */
+	uint32_t tcp_keepintvl;
 	/** Whether to use short NFS file handle to accommodate VMware
 	    NFS client. Enable this if you have a VMware NFSv3 client.
 	    VMware NFSv3 client has a max limit of 56 byte file handles!
@@ -382,8 +388,13 @@ typedef struct nfs_core_param {
 	/** Path to the directory containing server specific
 	    modules.  In particular, this is where FSALs live. */
 	char *ganesha_modules_loc;
-	/* Frequency of dbus health heartbeat in ms. Set to 0 to disable */
+	/** Frequency of dbus health heartbeat in ms. Set to 0 to disable */
 	uint32_t heartbeat_freq;
+	/** Whether to use device major/minor for fsid. Defaults to false. */
+	bool fsid_device;
+	/** Whether to use Pseudo (true) or Path (false) for NFS v3 and 9P
+	    mounts. */
+	bool mount_path_pseudo;
 } nfs_core_parameter_t;
 
 /** @} */

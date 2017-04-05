@@ -354,11 +354,6 @@ union state_data {
 extern char all_zero[OTHERSIZE];
 extern char all_ones[OTHERSIZE];
 
-struct state_obj {
-	char digest[58];
-	size_t len;
-};
-
 /**
  * @brief Structure representing a single NFSv4 state
  *
@@ -380,7 +375,7 @@ struct state_t {
 	struct gsh_export *state_export; /**< Export this entry belongs to */
 	/* Don't re-order or move these next two.  They are used for hashing */
 	state_owner_t *state_owner;	/**< State Owner related to state */
-	struct state_obj state_obj;	/**< digest of owning object */
+	struct fsal_obj_handle *state_obj; /**< owning object */
 	struct fsal_export *state_exp;  /**< FSAL export */
 	union state_data state_data;
 	enum state_type state_type;
@@ -569,10 +564,18 @@ struct state_nfs4_owner_t {
 						   open-owner under which
 						   the lock owner was
 						   created */
-	struct glist_head so_state_list; /*< States owned by this owner */
+	struct glist_head so_state_list; /*< This is the head of a list of
+					   states owned by this owner.
+					   so_mutex MUST be held when
+					   accessing this field. */
 	struct glist_head so_perclient;  /*< open owner entry to be
 					   linked to client */
-	time_t cache_expire; /* time cached OPEN owner will expire */
+	struct glist_head so_cache_entry; /*< Entry on cached_open_owners */
+	time_t so_cache_expire; /* time cached OPEN owner will expire.  If
+				   non-zero, so_cache_entry is in
+				   cached_open_owners list.
+				   cached_open_owners_lock MUST be held
+				   when accessing this field.*/
 };
 
 /**
@@ -685,10 +688,6 @@ struct nfs_client_id_t {
 	} cid_cb;		/*< Version specific callback information */
 	time_t first_path_down_resp_time;  /* Time when the server first sent
 					       NFS4ERR_CB_PATH_DOWN */
-	char cid_server_owner[MAXNAMLEN + 1];	/*< Server owner.
-						 * @note Why is this
-						 * stored per-client? */
-	char cid_server_scope[MAXNAMLEN + 1];	/*< Server scope */
 	unsigned int cid_nb_session;	/*< Number of sessions stored */
 	nfs41_session_slot_t cid_create_session_slot; /*< Cached response to
 							  last CREATE_SESSION */

@@ -38,7 +38,6 @@
 #include "nfs_dupreq.h"
 #include "config_parsing.h"
 #include "common_utils.h"
-#include "nodelist.h"
 #include <stdlib.h>
 #include <fnmatch.h>
 #include <sys/socket.h>
@@ -52,6 +51,7 @@
 #include "sal_functions.h"
 #include "pnfs_utils.h"
 #include "netgroup_cache.h"
+#include "mdcache.h"
 
 /**
  * @brief Protect EXPORT_DEFAULTS structure for dynamic update.
@@ -96,7 +96,7 @@ static int StrExportOptions(struct display_buffer *dspbuf,
 	if (b_left <= 0)
 		return b_left;
 
-	b_left = display_printf(dspbuf, "options=%08 "PRIx32, p_perms->options);
+	b_left = display_printf(dspbuf, "options=%08"PRIx32, p_perms->options);
 
 	if (b_left <= 0)
 		return b_left;
@@ -488,13 +488,27 @@ static int add_client(struct glist_head *client_list,
 	case TERM_V4ADDR:
 		rc = inet_pton(AF_INET, client_tok,
 			       &cli->client.hostif.clientaddr);
-		assert(rc == 1);  /* this had better be grok'd by now! */
+		if (rc != 1) {
+			config_proc_error(cnode, err_type,
+					  "IPv4 addr (%s) not in presentation format",
+					  client_tok);
+			err_type->invalid = true;
+			errcnt++;
+			goto out;
+		}
 		cli->type = HOSTIF_CLIENT;
 		break;
 	case TERM_V6ADDR:
 		rc = inet_pton(AF_INET6, client_tok,
 			       &cli->client.hostif.clientaddr6);
-		assert(rc == 1);  /* this had better be grok'd by now! */
+		if (rc != 1) {
+			config_proc_error(cnode, err_type,
+					  "IPv6 addr (%s) not in presentation format",
+					  client_tok);
+			err_type->invalid = true;
+			errcnt++;
+			goto out;
+		}
 		cli->type = HOSTIF_CLIENT_V6;
 		break;
 	case TERM_TOKEN: /* only dns names now. */
@@ -748,7 +762,11 @@ static int fsal_cfg_commit(void *node, void *link_mem, void *self_struct,
 
 	clean_export_paths(export);
 
-	status = fsal->m_ops.create_export(fsal, node, err_type, &fsal_up_top);
+	/* The handle cache (currently MDCACHE) must be at the top of the stack
+	 * of FSALs.  To achieve this, call directly into MDCACHE, passing the
+	 * sub-FSAL's fsal_module.  MDCACHE will stack itself on top of that
+	 * FSAL, continuing down the chain. */
+	status = mdcache_fsal_create_export(fsal, node, err_type, &fsal_up_top);
 
 	PTHREAD_RWLOCK_rdlock(&export_opt_lock);
 
@@ -996,7 +1014,7 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 	if (export->export_perms.options & EXPORT_OPTION_NFSV4) {
 		if (export->pseudopath == NULL) {
 			LogCrit(COMPONENT_CONFIG,
-				"Exporting to NFSv4 but not Pseudo path defined");
+				"Exporting to NFSv4 but no Pseudo path defined");
 			err_type->invalid = true;
 			errcnt++;
 			return errcnt;
@@ -1010,6 +1028,18 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 			return errcnt;
 		}
 	}
+
+	/* If we are using mount_path_pseudo = true we MUST have a Pseudo Path.
+	 */
+	if (nfs_param.core_param.mount_path_pseudo &&
+	    export->pseudopath == NULL) {
+		LogCrit(COMPONENT_CONFIG,
+			"NFS_CORE_PARAM mount_path_pseudo is TRUE but no Pseudo path defined");
+		err_type->invalid = true;
+		errcnt++;
+		return errcnt;
+	}
+
 	if (export->pseudopath != NULL &&
 	    export->pseudopath[0] != '/') {
 		LogCrit(COMPONENT_CONFIG,
@@ -1032,7 +1062,7 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 		if ((export->export_perms.options &
 		     EXPORT_OPTION_PROTOCOLS) != EXPORT_OPTION_NFSV4) {
 			LogCrit(COMPONENT_CONFIG,
-				"Export id 0 must indicate Protocols=4");
+				"Export id 0 must include 4 in Protocols");
 			err_type->invalid = true;
 			errcnt++;
 		}
@@ -1272,14 +1302,14 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 				err_type->resource = true;
 			}
 
-			return errcnt;
+			goto out;
 		}
 
 		if (!mount_gsh_export(export)) {
 			export_revert(export);
 			err_type->internal = true;
 			errcnt++;
-			return errcnt;
+			goto out;
 		}
 	}
 
@@ -1300,6 +1330,7 @@ success:
 		"Export %d has %zd defined clients", export->export_id,
 		glist_length(&export->clients));
 
+out:
 	if (commit_type != update_export) {
 		/* For initial or add export, insert_gsh_export gave out
 		 * two references, a sentinel reference for the export's
@@ -1313,7 +1344,7 @@ success:
 		put_gsh_export(export);
 	}
 
-	return 0;
+	return errcnt;
 }
 
 static int export_commit(void *node, void *link_mem, void *self_struct,
@@ -1608,9 +1639,6 @@ static int client_adder(const char *token,
 	proto_cli = container_of(param_addr,
 				 struct exportlist_client_entry__,
 				 cle_list);
-#ifdef USE_NODELIST
-#error "Node list expansion goes here but not yet"
-#endif
 	LogMidDebug(COMPONENT_CONFIG, "Adding client %s", token);
 	rc = add_client(&proto_cli->cle_list,
 			token, type_hint,
@@ -1667,14 +1695,18 @@ static struct config_item fsal_params[] = {
 		       _struct_, fullpath), /* must chomp '/' */	\
 	CONF_UNIQ_PATH("Pseudo", 1, MAXPATHLEN, NULL,			\
 		       _struct_, pseudopath),				\
-	CONF_ITEM_UI64("MaxRead", 512, FSAL_MAXIOSIZE, FSAL_MAXIOSIZE,	\
-		       _struct_, MaxRead),				\
-	CONF_ITEM_UI64("MaxWrite", 512, FSAL_MAXIOSIZE, FSAL_MAXIOSIZE,	\
-		       _struct_, MaxWrite),				\
-	CONF_ITEM_UI64("PrefRead", 512, FSAL_MAXIOSIZE, FSAL_MAXIOSIZE,	\
-		       _struct_, PrefRead),				\
-	CONF_ITEM_UI64("PrefWrite", 512, FSAL_MAXIOSIZE, FSAL_MAXIOSIZE,\
-		       _struct_, PrefWrite),				\
+	CONF_ITEM_UI64_SET("MaxRead", 512, FSAL_MAXIOSIZE,		\
+			FSAL_MAXIOSIZE, _struct_, MaxRead,		\
+			EXPORT_OPTION_MAXREAD_SET, options_set),	\
+	CONF_ITEM_UI64_SET("MaxWrite", 512, FSAL_MAXIOSIZE,		\
+			FSAL_MAXIOSIZE, _struct_, MaxWrite,		\
+			EXPORT_OPTION_MAXWRITE_SET, options_set),	\
+	CONF_ITEM_UI64_SET("PrefRead", 512, FSAL_MAXIOSIZE,		\
+			FSAL_MAXIOSIZE, _struct_, PrefRead,		\
+			EXPORT_OPTION_PREFREAD_SET, options_set),	\
+	CONF_ITEM_UI64_SET("PrefWrite", 512, FSAL_MAXIOSIZE,		\
+			FSAL_MAXIOSIZE, _struct_, PrefWrite,		\
+			EXPORT_OPTION_PREFWRITE_SET, options_set),	\
 	CONF_ITEM_UI64("PrefReaddir", 512, FSAL_MAXIOSIZE, 16384,	\
 		       _struct_, PrefReaddir),				\
 	CONF_ITEM_FSID_SET("Filesystem_id", 666, 666,			\
@@ -1882,7 +1914,11 @@ static int build_default_root(struct config_error_type *err_type)
 
 	export->options = EXPORT_OPTION_USE_COOKIE_VERIFIER;
 	export->options_set = EXPORT_OPTION_FSID_SET |
-			      EXPORT_OPTION_USE_COOKIE_VERIFIER;
+			      EXPORT_OPTION_USE_COOKIE_VERIFIER |
+			      EXPORT_OPTION_MAXREAD_SET |
+			      EXPORT_OPTION_MAXWRITE_SET |
+			      EXPORT_OPTION_PREFREAD_SET |
+			      EXPORT_OPTION_PREFWRITE_SET;
 
 	/* Set the fullpath to "/" */
 	export->fullpath = gsh_strdup("/");
@@ -2134,6 +2170,52 @@ fsal_status_t nfs_export_get_root_entry(struct gsh_export *export,
 }
 
 /**
+ * @brief Set file systems max read write sizes in the export
+ *
+ * @param export [IN] the export
+ * @param maxread [IN] maxread size
+ * @param maxwrite [IN] maxwrite size
+ */
+
+static void set_fs_max_rdwr_size(struct gsh_export *export, uint64_t maxread,
+				 uint64_t maxwrite)
+{
+	if (maxread != 0) {
+		if (!op_ctx_export_has_option_set(EXPORT_OPTION_MAXREAD_SET)) {
+			LogInfo(COMPONENT_EXPORT,
+				"Readjusting MaxRead to %" PRIu64,
+				maxread);
+			export->MaxRead = maxread;
+		}
+
+		if (!op_ctx_export_has_option_set(EXPORT_OPTION_PREFREAD_SET) ||
+		    (export->PrefRead > export->MaxRead)) {
+			LogInfo(COMPONENT_EXPORT,
+				"Readjusting PrefRead to %"PRIu64,
+				export->MaxRead);
+			export->PrefRead = export->MaxRead;
+		}
+	}
+
+	if (maxwrite != 0) {
+		if (!op_ctx_export_has_option_set(EXPORT_OPTION_MAXWRITE_SET)) {
+			LogInfo(COMPONENT_EXPORT,
+				"Readjusting MaxWrite to %"PRIu64,
+				maxwrite);
+			export->MaxWrite = maxwrite;
+		}
+
+		if (!op_ctx_export_has_option_set(EXPORT_OPTION_PREFWRITE_SET)
+		    || (export->PrefWrite > export->MaxWrite)) {
+			LogInfo(COMPONENT_EXPORT,
+				"Readjusting PrefWrite to %"PRIu64,
+				export->MaxWrite);
+			export->PrefWrite = export->MaxWrite;
+		}
+	}
+}
+
+/**
  * @brief Initialize the root cache inode for an export.
  *
  * Assumes being called with the export_by_id.lock held.
@@ -2175,6 +2257,26 @@ int init_export_root(struct gsh_export *export)
 		goto out;
 	}
 
+	if (!op_ctx_export_has_option_set(EXPORT_OPTION_MAXREAD_SET) ||
+	    !op_ctx_export_has_option_set(EXPORT_OPTION_MAXWRITE_SET) ||
+	    !op_ctx_export_has_option_set(EXPORT_OPTION_PREFREAD_SET) ||
+	    !op_ctx_export_has_option_set(EXPORT_OPTION_PREFWRITE_SET)) {
+
+		fsal_dynamicfsinfo_t dynamicinfo;
+
+		dynamicinfo.maxread = 0;
+		dynamicinfo.maxwrite = 0;
+		fsal_status =
+			export->fsal_export->exp_ops.get_fs_dynamic_info(
+				export->fsal_export, obj, &dynamicinfo);
+
+		if (!FSAL_IS_ERROR(fsal_status)) {
+			set_fs_max_rdwr_size(export,
+					     dynamicinfo.maxread,
+					     dynamicinfo.maxwrite);
+		}
+	}
+
 	PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
 	PTHREAD_RWLOCK_wrlock(&export->lock);
 
@@ -2205,13 +2307,27 @@ out:
 	return my_status;
 }
 
+static inline void clean_up_export(struct gsh_export *export,
+				   struct fsal_obj_handle *root_obj)
+{
+	/* Make export unreachable */
+	pseudo_unmount_export(export);
+	remove_gsh_export(export->export_id);
+
+	/* Release state belonging to this export */
+	state_release_export(export);
+
+	/* Flush FSAL-specific state */
+	export->fsal_export->exp_ops.unexport(export->fsal_export, root_obj);
+}
+
 /**
- * @brief Release the root cache inode for an export.
+ * @brief Release all the export state, including the root object
  *
  * @param exp [IN] the export
  */
 
-void release_export_root(struct gsh_export *export)
+static void release_export(struct gsh_export *export)
 {
 	struct fsal_obj_handle *obj = NULL;
 	fsal_status_t fsal_status;
@@ -2242,28 +2358,14 @@ void release_export_root(struct gsh_export *export)
 	PTHREAD_RWLOCK_unlock(&export->lock);
 	PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
-	/* Release sentinal ref */
-	obj->obj_ops.put_ref(obj);
-
 	LogDebug(COMPONENT_EXPORT,
 		 "Released root obj %p for path %s on export_id=%d",
 		 obj, export->fullpath, export->export_id);
 
+	clean_up_export(export, obj);
+
 	/* Release ref taken above */
 	obj->obj_ops.put_ref(obj);
-}
-
-static inline void clean_up_export(struct gsh_export *export)
-{
-	/* Make export unreachable */
-	pseudo_unmount_export(export);
-	remove_gsh_export(export->export_id);
-
-	/* Release state belonging to this export */
-	state_release_export(export);
-
-	/* Flush FSAL-specific state */
-	export->fsal_export->exp_ops.unexport(export->fsal_export);
 }
 
 void unexport(struct gsh_export *export)
@@ -2283,8 +2385,8 @@ void unexport(struct gsh_export *export)
 		op_ctx_set = true;
 	}
 
-	release_export_root(export);
-	clean_up_export(export);
+	release_export(export);
+
 	if (op_ctx_set)
 		release_root_op_context();
 }
@@ -2504,13 +2606,13 @@ static exportlist_client_entry_t *client_match_any(sockaddr_t *hostaddr,
  */
 bool export_check_security(struct svc_req *req)
 {
-	switch (req->rq_cred.oa_flavor) {
+	switch (req->rq_msg.cb_cred.oa_flavor) {
 	case AUTH_NONE:
 		if ((op_ctx->export_perms->options &
 		     EXPORT_OPTION_AUTH_NONE) == 0) {
 			LogInfo(COMPONENT_EXPORT,
 				"Export %s does not support AUTH_NONE",
-				op_ctx->ctx_export->fullpath);
+				op_ctx_export_path(op_ctx->ctx_export));
 			return false;
 		}
 		break;
@@ -2520,7 +2622,7 @@ bool export_check_security(struct svc_req *req)
 		     EXPORT_OPTION_AUTH_UNIX) == 0) {
 			LogInfo(COMPONENT_EXPORT,
 				"Export %s does not support AUTH_UNIX",
-				op_ctx->ctx_export->fullpath);
+				op_ctx_export_path(op_ctx->ctx_export));
 			return false;
 		}
 		break;
@@ -2533,14 +2635,13 @@ bool export_check_security(struct svc_req *req)
 				 EXPORT_OPTION_RPCSEC_GSS_PRIV)) == 0) {
 			LogInfo(COMPONENT_EXPORT,
 				"Export %s does not support RPCSEC_GSS",
-				op_ctx->ctx_export->fullpath);
+				op_ctx_export_path(op_ctx->ctx_export));
 			return false;
 		} else {
-			struct svc_rpc_gss_data *gd;
-			rpc_gss_svc_t svc;
+			struct rpc_gss_cred *gc = (struct rpc_gss_cred *)
+				req->rq_msg.rq_cred_body;
+			rpc_gss_svc_t svc = gc->gc_svc;
 
-			gd = SVCAUTH_PRIVATE(req->rq_auth);
-			svc = gd->sec.svc;
 			LogFullDebug(COMPONENT_EXPORT, "Testing svc %d",
 				     (int)svc);
 			switch (svc) {
@@ -2549,7 +2650,8 @@ bool export_check_security(struct svc_req *req)
 				     EXPORT_OPTION_RPCSEC_GSS_NONE) == 0) {
 					LogInfo(COMPONENT_EXPORT,
 						"Export %s does not support RPCSEC_GSS_SVC_NONE",
-						op_ctx->ctx_export->fullpath);
+						op_ctx_export_path(
+							op_ctx->ctx_export));
 					return false;
 				}
 				break;
@@ -2559,7 +2661,8 @@ bool export_check_security(struct svc_req *req)
 				     EXPORT_OPTION_RPCSEC_GSS_INTG) == 0) {
 					LogInfo(COMPONENT_EXPORT,
 						"Export %s does not support RPCSEC_GSS_SVC_INTEGRITY",
-						op_ctx->ctx_export->fullpath);
+						op_ctx_export_path(
+							op_ctx->ctx_export));
 					return false;
 				}
 				break;
@@ -2569,7 +2672,8 @@ bool export_check_security(struct svc_req *req)
 				     EXPORT_OPTION_RPCSEC_GSS_PRIV) == 0) {
 					LogInfo(COMPONENT_EXPORT,
 						"Export %s does not support RPCSEC_GSS_SVC_PRIVACY",
-						op_ctx->ctx_export->fullpath);
+						op_ctx_export_path(
+							op_ctx->ctx_export));
 					return false;
 				}
 				break;
@@ -2577,7 +2681,7 @@ bool export_check_security(struct svc_req *req)
 			default:
 				LogInfo(COMPONENT_EXPORT,
 					"Export %s does not support unknown RPCSEC_GSS_SVC %d",
-					op_ctx->ctx_export->fullpath,
+					op_ctx_export_path(op_ctx->ctx_export),
 					(int)svc);
 				return false;
 			}
@@ -2587,8 +2691,8 @@ bool export_check_security(struct svc_req *req)
 	default:
 		LogInfo(COMPONENT_EXPORT,
 			"Export %s does not support unknown oa_flavor %d",
-			op_ctx->ctx_export->fullpath,
-			(int)req->rq_cred.oa_flavor);
+			op_ctx_export_path(op_ctx->ctx_export),
+			(int)req->rq_msg.cb_cred.oa_flavor);
 		return false;
 	}
 
@@ -2746,9 +2850,9 @@ void export_check_access(void)
 		(void) sprint_sockip(hostaddr,
 				     ipstring, sizeof(ipstring));
 		LogMidDebug(COMPONENT_EXPORT,
-			    "Check for address %s for export id %u fullpath %s",
+			    "Check for address %s for export id %u path %s",
 			    ipstring, op_ctx->ctx_export->export_id,
-			    op_ctx->ctx_export->fullpath);
+			    op_ctx_export_path(op_ctx->ctx_export));
 	}
 
 	/* Does the client match anyone on the client list? */

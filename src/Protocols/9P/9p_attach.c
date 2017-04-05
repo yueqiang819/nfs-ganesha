@@ -60,7 +60,7 @@ int _9p_attach(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	struct _9p_fid *pfid = NULL;
 
 	fsal_status_t fsal_status;
-	char exppath[MAXPATHLEN];
+	char exppath[MAXPATHLEN+1];
 	struct gsh_buffdesc fh_desc;
 	struct fsal_obj_handle *pfsal_handle;
 	int port;
@@ -88,12 +88,30 @@ int _9p_attach(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	 *
 	 * Keep it in the op_ctx.
 	 */
-	snprintf(exppath, MAXPATHLEN, "%.*s", (int)*aname_len, aname_str);
+	if (*aname_len >= sizeof(exppath)) {
+		err = ENAMETOOLONG;
+		goto errout;
+	}
+	snprintf(exppath, sizeof(exppath), "%.*s", (int)*aname_len, aname_str);
 
-	if (exppath[0] == '/')
-		op_ctx->ctx_export = get_gsh_export_by_path(exppath, false);
-	else
+	/*  Find the export for the dirname (using as well Path, Pseudo, or Tag)
+	 */
+	if (exppath[0] != '/') {
+		LogFullDebug(COMPONENT_9P,
+			     "Searching for export by tag for %s",
+			     exppath);
 		op_ctx->ctx_export = get_gsh_export_by_tag(exppath);
+	} else if (nfs_param.core_param.mount_path_pseudo) {
+		LogFullDebug(COMPONENT_9P,
+			     "Searching for export by pseudo for %s",
+			     exppath);
+		op_ctx->ctx_export = get_gsh_export_by_pseudo(exppath, false);
+	} else {
+		LogFullDebug(COMPONENT_9P,
+			     "Searching for export by path for %s",
+			     exppath);
+		op_ctx->ctx_export = get_gsh_export_by_path(exppath, false);
+	}
 
 	/* Did we find something ? */
 	if (op_ctx->ctx_export == NULL) {
@@ -164,7 +182,7 @@ int _9p_attach(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	}
 
 	if (exppath[0] != '/' ||
-	    !strcmp(exppath, op_ctx->ctx_export->fullpath)) {
+	    !strcmp(exppath, export_path(op_ctx->ctx_export))) {
 		/* Check if root object is correctly set, fetch it, and take an
 		 * LRU reference.
 		 */

@@ -19,6 +19,7 @@
 #include <fcntl.h>
 #include <sys/resource.h>
 
+#include "fsal.h"
 #include "fsal_convert.h"
 #include "common_utils.h"
 
@@ -374,9 +375,6 @@ void fsal2posix_openflags(fsal_openflags_t fsal_flags, int *p_posix_flags)
 	else if ((fsal_flags & FSAL_O_ANY) != 0)
 		*p_posix_flags |= O_RDONLY;
 
-	if (fsal_flags & FSAL_O_SYNC)
-		*p_posix_flags |= O_SYNC;
-
 	if (fsal_flags & FSAL_O_TRUNC)
 		*p_posix_flags |= O_TRUNC;
 }
@@ -421,6 +419,8 @@ void posix2fsal_attributes(const struct stat *buffstat,
 	 * other bits in the mask.
 	 */
 	fsalattr->valid_mask |= ATTRS_POSIX;
+	fsalattr->supported = op_ctx->fsal_export->exp_ops.fs_supported_attrs(
+							op_ctx->fsal_export);
 
 	/* Fills the output struct */
 	fsalattr->type = posix2fsal_type(buffstat->st_mode);

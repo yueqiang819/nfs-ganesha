@@ -44,8 +44,10 @@
 #include <include/rados/librgw.h>
 #include <include/rados/rgw_file.h>
 
-#if ((LIBRGW_FILE_VER_MAJOR != 1) || (LIBRGW_FILE_VER_MINOR < 1))
-#error rados/rgw_file.h version unsupported (require >= 1.1.0)
+
+#if ((LIBRGW_FILE_VER_MAJOR != 1) || (LIBRGW_FILE_VER_MINOR < 1) || \
+	(LIBRGW_FILE_VER_EXTRA < 2))
+#error rados/rgw_file.h version unsupported (require >= 1.1.1)
 #endif
 
 /**
@@ -75,6 +77,7 @@ extern struct rgw_fsal_module RGWFSM;
 struct rgw_export {
 	struct fsal_export export;	/*< The public export object */
 	struct rgw_fs *rgw_fs;		/*< "Opaque" fs handle */
+	struct rgw_handle *root;    /*< root handle */
 	char *rgw_name;
 	char *rgw_user_id;
 	char *rgw_access_key_id;
@@ -141,6 +144,7 @@ int construct_handle(struct rgw_export *export,
 		     struct rgw_file_handle *rgw_file_handle,
 		     struct stat *st,
 		     struct rgw_handle **obj);
+void deconstruct_handle(struct rgw_handle *obj);
 
 fsal_status_t rgw2fsal_error(const int errorcode);
 void export_ops_init(struct export_ops *ops);
@@ -148,4 +152,5 @@ void handle_ops_init(struct fsal_obj_ops *ops);
 struct state_t *alloc_state(struct fsal_export *exp_hdl,
 			enum state_type state_type,
 			struct state_t *related_state);
+void rgw_fs_invalidate(void *handle, struct rgw_fh_hk fh_hk);
 #endif				/* !FSAL_RGW_INTERNAL_INTERNAL */

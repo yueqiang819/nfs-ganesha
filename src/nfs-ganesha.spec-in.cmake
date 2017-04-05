@@ -110,7 +110,7 @@ BuildRequires:	libblkid-devel
 BuildRequires:	libuuid-devel
 BuildRequires:	gcc-c++
 %if %{with system_ntirpc}
-BuildRequires: libntirpc-devel >= @NTIRPC_VERSION@
+BuildRequires: libntirpc-devel >= @NTIRPC_MIN_VERSION@
 %endif
 Requires:	nfs-utils
 %if ( 0%{?fedora} ) || ( 0%{?rhel} && 0%{?rhel} >= 6 ) || ( 0%{?suse_version} )
@@ -141,6 +141,7 @@ Requires(postun): systemd
 %else
 BuildRequires:	initscripts
 %endif
+Requires(post): psmisc
 
 # Use CMake variables
 
@@ -182,9 +183,9 @@ be used with NFS-Ganesha to support PROXY based filesystems
 Summary: The NFS-GANESHA's util scripts
 Group: Applications/System
 %if ( 0%{?suse_version} )
-Requires:	dbus-1-python, python-gobject2
+Requires:	dbus-1-python, python-gobject2, python-pyparsing
 %else
-Requires:	dbus-python, pygobject2
+Requires:	dbus-python, pygobject2, pyparsing
 %endif
 %if %{with gui_utils}
 %if ( 0%{?suse_version} )
@@ -195,8 +196,8 @@ BuildRequires:	PyQt4-devel
 Requires:	PyQt4
 %endif
 %endif
-BuildRequires:  python-devel
-Requires: nfs-ganesha = %{version}-%{release}, python
+BuildRequires:  python2-devel
+Requires: nfs-ganesha = %{version}-%{release}, python2
 
 %description utils
 This package contains utility scripts for managing the NFS-GANESHA server
@@ -395,6 +396,10 @@ install -m 644 config_samples/zfs.conf %{buildroot}%{_sysconfdir}/ganesha
 install -m 644 config_samples/ceph.conf %{buildroot}%{_sysconfdir}/ganesha
 %endif
 
+%if %{with rgw}
+install -m 644 config_samples/rgw.conf %{buildroot}%{_sysconfdir}/ganesha
+%endif
+
 %if %{with gluster}
 install -m 644 config_samples/logrotate_fsal_gluster %{buildroot}%{_sysconfdir}/logrotate.d/ganesha-gfapi
 %endif
@@ -424,7 +429,7 @@ make DESTDIR=%{buildroot} install
 %systemd_post nfs-ganesha-config.service
 %endif
 %endif
-killall -SIGHUP dbus-daemon 2>&1 > /dev/null
+killall -SIGHUP dbus-daemon >/dev/null 2>&1 || :
 
 %preun
 %if ( 0%{?suse_version} )
@@ -448,7 +453,7 @@ killall -SIGHUP dbus-daemon 2>&1 > /dev/null
 %defattr(-,root,root,-)
 %{_bindir}/ganesha.nfsd
 %if ! %{with system_ntirpc}
-%{_libdir}/libntirpc.so.@NTIRPC_VERSION@
+%{_libdir}/libntirpc.so.@NTIRPC_VERSION_EMBED@
 %{_libdir}/libntirpc.so.1.4
 %{_libdir}/libntirpc.so
 %{_libdir}/pkgconfig/libntirpc.pc
@@ -567,7 +572,7 @@ killall -SIGHUP dbus-daemon 2>&1 > /dev/null
 %if %{with utils}
 %files utils
 %defattr(-,root,root,-)
-%if ( 0%{?suse_version} || 0%{?fedora} )
+%if ( 0%{?suse_version} )
 %{python_sitelib}/Ganesha/*
 %{python_sitelib}/ganeshactl-*-info
 %else
@@ -590,6 +595,8 @@ killall -SIGHUP dbus-daemon 2>&1 > /dev/null
 %{_bindir}/ganesha_stats
 %{_bindir}/sm_notify.ganesha
 %{_bindir}/ganesha_mgr
+%{_bindir}/ganesha_conf
+%{_mandir}/*/*
 %endif
 
 %changelog

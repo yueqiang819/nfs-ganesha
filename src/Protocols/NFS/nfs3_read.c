@@ -105,7 +105,8 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		offset = arg->arg_read3.offset;
 		size = arg->arg_read3.count;
 
-		nfs_FhandleToStr(req->rq_vers, &arg->arg_read3.file, NULL, str);
+		nfs_FhandleToStr(req->rq_msg.cb_vers, &arg->arg_read3.file,
+				 NULL, str);
 		LogDebug(COMPONENT_NFSPROTO,
 			 "REQUEST PROCESSING: Calling nfs_Read handle: %s start: %"
 			 PRIu64 " len: %zu",
@@ -139,8 +140,7 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 		fsal_status = fsal_access(obj,
 				       FSAL_MODE_MASK_SET(FSAL_X_OK) |
 				       FSAL_ACE4_MASK_SET
-				       (FSAL_ACE_PERM_EXECUTE),
-				       NULL, NULL);
+				       (FSAL_ACE_PERM_EXECUTE));
 	}
 
 	if (FSAL_IS_ERROR(fsal_status)) {

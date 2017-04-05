@@ -74,6 +74,7 @@ static void handle_release(struct fsal_obj_handle *obj_hdl)
 				"glfs_h_close returned error %s(%d)",
 				strerror(errno), errno);
 		}
+		objhandle->glhandle = NULL;
 	}
 
 	gsh_free(objhandle);
@@ -109,7 +110,7 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	now(&s_time);
 #endif
 
-	glhandle = glfs_h_lookupat(glfs_export->gl_fs,
+	glhandle = glfs_h_lookupat(glfs_export->gl_fs->fs,
 				parenthandle->glhandle, path, &sb, 0);
 	if (glhandle == NULL) {
 		status = gluster2fsal_error(errno);
@@ -122,7 +123,8 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 		goto out;
 	}
 
-	rc = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid, GLAPI_UUID_LENGTH);
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
 		status = gluster2fsal_error(rc);
 		goto out;
@@ -173,7 +175,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 #endif
 
 	/** @todo : Can we use globalfd instead */
-	glfd = glfs_h_opendir(glfs_export->gl_fs, objhandle->glhandle);
+	glfd = glfs_h_opendir(glfs_export->gl_fs->fs, objhandle->glhandle);
 	if (glfd == NULL)
 		return gluster2fsal_error(errno);
 
@@ -189,7 +191,7 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 		rc = glfs_readdir_r(glfd, &de, &pde);
 		if (rc == 0 && pde != NULL) {
 			struct attrlist attrs;
-			bool cb_rc;
+			enum fsal_dir_result cb_rc;
 
 			/* skip . and .. */
 			if ((strcmp(de.d_name, ".") == 0)
@@ -203,11 +205,11 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 				goto out;
 
 			cb_rc = cb(de.d_name, obj, &attrs,
-				   dir_state, glfs_telldir(glfd));
+				   dir_state, glfs_telldir(glfd), NULL);
 
 			fsal_release_attrs(&attrs);
 
-			if (!cb_rc)
+			if (cb_rc >= DIR_TERMINATE)
 				goto out;
 		} else if (rc == 0 && pde == NULL) {
 			*eof = true;
@@ -266,7 +268,7 @@ static fsal_status_t create(struct fsal_obj_handle *dir_hdl,
 
 	/* FIXME: what else from attrib should we use? */
 	glhandle =
-	    glfs_h_creat(glfs_export->gl_fs, parenthandle->glhandle, name,
+	    glfs_h_creat(glfs_export->gl_fs->fs, parenthandle->glhandle, name,
 			 O_CREAT | O_EXCL, fsal2unix_mode(attrib->mode), &sb);
 
 	rc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -287,7 +289,8 @@ static fsal_status_t create(struct fsal_obj_handle *dir_hdl,
 		goto out;
 	}
 
-	rc = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid, GLAPI_UUID_LENGTH);
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
 		status = gluster2fsal_error(rc);
 		goto out;
@@ -351,7 +354,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 	}
 
 	glhandle =
-	    glfs_h_mkdir(glfs_export->gl_fs, parenthandle->glhandle, name,
+	    glfs_h_mkdir(glfs_export->gl_fs->fs, parenthandle->glhandle, name,
 			 fsal2unix_mode(attrib->mode), &sb);
 
 	rc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -372,7 +375,8 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 		goto out;
 	}
 
-	rc = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid, GLAPI_UUID_LENGTH);
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
 		status = gluster2fsal_error(rc);
 		goto out;
@@ -402,6 +406,8 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 				     "setattr2 status=%s",
 				     fsal_err_txt(status));
 			(*handle)->obj_ops.release(*handle);
+			/* We released handle at this point */
+			glhandle = NULL;
 			*handle = NULL;
 		}
 	} else {
@@ -428,7 +434,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 
 static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 			      const char *name, object_file_type_t nodetype,
-			      fsal_dev_t *dev, struct attrlist *attrib,
+			      struct attrlist *attrib,
 			      struct fsal_obj_handle **handle,
 			      struct attrlist *attrs_out)
 {
@@ -453,16 +459,12 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 
 	switch (nodetype) {
 	case BLOCK_FILE:
-		if (!dev)
-			return fsalstat(ERR_FSAL_INVAL, 0);
 		/* FIXME: This needs a feature flag test? */
-		ndev = makedev(dev->major, dev->minor);
+		ndev = makedev(attrib->rawdev.major, attrib->rawdev.minor);
 		create_mode = S_IFBLK;
 		break;
 	case CHARACTER_FILE:
-		if (!dev)
-			return fsalstat(ERR_FSAL_INVAL, 0);
-		ndev = makedev(dev->major, dev->minor);
+		ndev = makedev(attrib->rawdev.major, attrib->rawdev.minor);
 		create_mode = S_IFCHR;
 		break;
 	case FIFO_FILE:
@@ -488,7 +490,7 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 	}
 
 	glhandle =
-	    glfs_h_mknod(glfs_export->gl_fs, parenthandle->glhandle, name,
+	    glfs_h_mknod(glfs_export->gl_fs->fs, parenthandle->glhandle, name,
 			 create_mode | fsal2unix_mode(attrib->mode), ndev, &sb);
 
 	rc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -509,7 +511,8 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 		goto out;
 	}
 
-	rc = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid, GLAPI_UUID_LENGTH);
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
 		status = gluster2fsal_error(rc);
 		goto out;
@@ -539,6 +542,8 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 				     "setattr2 status=%s",
 				     fsal_err_txt(status));
 			(*handle)->obj_ops.release(*handle);
+			/* We released handle at this point */
+			glhandle = NULL;
 			*handle = NULL;
 		}
 	} else {
@@ -596,7 +601,7 @@ static fsal_status_t makesymlink(struct fsal_obj_handle *dir_hdl,
 	}
 
 	glhandle =
-	    glfs_h_symlink(glfs_export->gl_fs, parenthandle->glhandle, name,
+	    glfs_h_symlink(glfs_export->gl_fs->fs, parenthandle->glhandle, name,
 			   link_path, &sb);
 
 	rc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -617,7 +622,8 @@ static fsal_status_t makesymlink(struct fsal_obj_handle *dir_hdl,
 		goto out;
 	}
 
-	rc = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid, GLAPI_UUID_LENGTH);
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
 		status = gluster2fsal_error(rc);
 		goto out;
@@ -644,6 +650,8 @@ static fsal_status_t makesymlink(struct fsal_obj_handle *dir_hdl,
 				     "setattr2 status=%s",
 				     fsal_err_txt(status));
 			(*handle)->obj_ops.release(*handle);
+			/* We released handle at this point */
+			glhandle = NULL;
 			*handle = NULL;
 		}
 	} else {
@@ -686,7 +694,7 @@ static fsal_status_t readsymlink(struct fsal_obj_handle *obj_hdl,
 	link_content->len = MAXPATHLEN; /* Max link path */
 	link_content->addr = gsh_malloc(link_content->len);
 
-	rc = glfs_h_readlink(glfs_export->gl_fs, objhandle->glhandle,
+	rc = glfs_h_readlink(glfs_export->gl_fs->fs, objhandle->glhandle,
 			     link_content->addr, link_content->len);
 	if (rc < 0) {
 		status = gluster2fsal_error(errno);
@@ -753,7 +761,7 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 
 	/** @todo: With support_ex() above may no longer be valid.
 	 * This needs to be revisited */
-	rc = glfs_h_stat(glfs_export->gl_fs,
+	rc = glfs_h_stat(glfs_export->gl_fs->fs,
 			 objhandle->glhandle, &buffxstat.buffstat);
 	if (rc != 0) {
 		if (errno == ENOENT)
@@ -846,7 +854,7 @@ static fsal_status_t linkfile(struct fsal_obj_handle *obj_hdl,
 		goto out;
 	}
 
-	rc = glfs_h_link(glfs_export->gl_fs, objhandle->glhandle,
+	rc = glfs_h_link(glfs_export->gl_fs->fs, objhandle->glhandle,
 			 dstparenthandle->glhandle, name);
 
 	credrc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -906,7 +914,7 @@ static fsal_status_t renamefile(struct fsal_obj_handle *obj_hdl,
 		goto out;
 	}
 
-	rc = glfs_h_rename(glfs_export->gl_fs, srcparenthandle->glhandle,
+	rc = glfs_h_rename(glfs_export->gl_fs->fs, srcparenthandle->glhandle,
 			   old_name, dstparenthandle->glhandle, new_name);
 
 	credrc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
@@ -961,7 +969,8 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *dir_hdl,
 		goto out;
 	}
 
-	rc = glfs_h_unlink(glfs_export->gl_fs, parenthandle->glhandle, name);
+	rc = glfs_h_unlink(glfs_export->gl_fs->fs, parenthandle->glhandle,
+			   name);
 
 	credrc = setglustercreds(glfs_export, NULL, NULL, 0, NULL);
 	if (credrc != 0) {
@@ -1019,7 +1028,7 @@ fsal_status_t glusterfs_open_my_fd(struct glusterfs_handle *objhandle,
 		     "openflags = %x, posix_flags = %x",
 		     openflags, posix_flags);
 
-	glfd = glfs_h_open(glfs_export->gl_fs, objhandle->glhandle,
+	glfd = glfs_h_open(glfs_export->gl_fs->fs, objhandle->glhandle,
 			   posix_flags);
 	if (glfd == NULL) {
 		status = gluster2fsal_error(errno);
@@ -1089,11 +1098,11 @@ static fsal_status_t file_close(struct fsal_obj_handle *obj_hdl)
 	/* Take write lock on object to protect file descriptor.
 	 * This can block over an I/O operation.
 	 */
-	PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 	status = glusterfs_close_my_fd(&objhandle->globalfd);
 
-	PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 #ifdef GLTIMING
 	now(&e_time);
@@ -1154,7 +1163,6 @@ fsal_status_t find_fd(struct glusterfs_fd *my_fd,
 		      struct state_t *state,
 		      fsal_openflags_t openflags,
 		      bool *has_lock,
-		      bool *need_fsync,
 		      bool *closefd,
 		      bool open_for_locks)
 {
@@ -1173,8 +1181,7 @@ fsal_status_t find_fd(struct glusterfs_fd *my_fd,
 			      &myself->share, bypass, state,
 			      openflags, glusterfs_open_func,
 			      glusterfs_close_func,
-			      has_lock, need_fsync,
-			      closefd, open_for_locks);
+			      has_lock, closefd, open_for_locks);
 
 	my_fd->glfd = tmp2_fd->glfd;
 	my_fd->openflags = tmp2_fd->openflags;
@@ -1214,11 +1221,11 @@ fsal_status_t glusterfs_merge(struct fsal_obj_handle *orig_hdl,
 		dupe = container_of(dupe_hdl, struct glusterfs_handle, handle);
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&orig_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&orig_hdl->obj_lock);
 
 		status = merge_share(&orig->share, &dupe->share);
 
-		PTHREAD_RWLOCK_unlock(&orig_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&orig_hdl->obj_lock);
 	}
 
 	return status;
@@ -1261,7 +1268,8 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 #endif
 
 	if (state != NULL)
-		my_fd = (struct glusterfs_fd *)(state + 1);
+		my_fd = &container_of(state, struct glusterfs_state_fd,
+				      state)->glusterfs_fd;
 
 	fsal2posix_openflags(openflags, &p_flags);
 
@@ -1297,7 +1305,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 			 */
 
 			/* This can block over an I/O operation. */
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 			/* Check share reservation conflicts. */
 			status = check_share_conflict(&myself->share,
@@ -1305,7 +1313,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 						      false);
 
 			if (FSAL_IS_ERROR(status)) {
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				return status;
 			}
 
@@ -1316,13 +1324,13 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 					      FSAL_O_CLOSED,
 					      openflags);
 
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 		} else {
 			/* We need to use the global fd to continue, and take
 			 * the lock to protect it.
 			 */
 			my_fd = &myself->globalfd;
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 		}
 
 		/* truncate is set in p_flags */
@@ -1335,7 +1343,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 				/* Release the lock taken above, and return
 				 * since there is nothing to undo.
 				 */
-				PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+				PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 				goto out;
 			} else {
 				/* Error - need to release the share */
@@ -1384,7 +1392,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 			 * status. If success, we haven't done any permission
 			 * check so ask the caller to do so.
 			 */
-			PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 			*caller_perm_check = !FSAL_IS_ERROR(status);
 			return status;
 		}
@@ -1406,13 +1414,13 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 		 * and undo the update of the share counters.
 		 * This can block over an I/O operation.
 		 */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->share,
 				      openflags,
 				      FSAL_O_CLOSED);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 		return status;
 	}
@@ -1504,7 +1512,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 	 *  glfs_h_open to verify if the file already exists.
 	 */
 	glhandle =
-	    glfs_h_creat(glfs_export->gl_fs, parenthandle->glhandle, name,
+	    glfs_h_creat(glfs_export->gl_fs->fs, parenthandle->glhandle, name,
 			 p_flags, unix_mode, &sb);
 
 	if (glhandle == NULL && errno == EEXIST &&
@@ -1521,7 +1529,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 		 */
 		p_flags &= ~O_EXCL;
 		glhandle =
-		    glfs_h_creat(glfs_export->gl_fs, parenthandle->glhandle,
+		    glfs_h_creat(glfs_export->gl_fs->fs, parenthandle->glhandle,
 				 name, p_flags, unix_mode, &sb);
 	}
 
@@ -1570,7 +1578,7 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 		goto direrr;
 	}
 
-	retval = glfs_get_volumeid(glfs_export->gl_fs, vol_uuid,
+	retval = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 				   GLAPI_UUID_LENGTH);
 	if (retval < 0) {
 		status = gluster2fsal_error(retval);
@@ -1614,6 +1622,8 @@ open:
 		if (FSAL_IS_ERROR(status)) {
 			/* Release the handle we just allocated. */
 			(*new_obj)->obj_ops.release(*new_obj);
+			/* We released handle at this point */
+			glhandle = NULL;
 			*new_obj = NULL;
 			goto fileerr;
 		}
@@ -1646,14 +1656,14 @@ open:
 		 */
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&(*new_obj)->lock);
+		PTHREAD_RWLOCK_wrlock(&(*new_obj)->obj_lock);
 
 		/* Take the share reservation now by updating the counters. */
 		update_share_counters(&myself->share,
 				      FSAL_O_CLOSED,
 				      openflags);
 
-		PTHREAD_RWLOCK_unlock(&(*new_obj)->lock);
+		PTHREAD_RWLOCK_unlock(&(*new_obj)->obj_lock);
 	}
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
@@ -1665,7 +1675,8 @@ fileerr:
 direrr:
 	/* Delete the file if we actually created it. */
 	if (created)
-		glfs_h_unlink(glfs_export->gl_fs, parenthandle->glhandle, name);
+		glfs_h_unlink(glfs_export->gl_fs->fs, parenthandle->glhandle,
+			      name);
 
 
 	if (status.major != ERR_FSAL_NO_ERROR)
@@ -1693,7 +1704,8 @@ static fsal_status_t glusterfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	int posix_flags = 0;
 	fsal_openflags_t old_openflags;
 
-	my_share_fd = (struct glusterfs_fd *)(state + 1);
+	my_share_fd = &container_of(state, struct glusterfs_state_fd,
+				    state)->glusterfs_fd;
 
 	fsal2posix_openflags(openflags, &posix_flags);
 
@@ -1714,7 +1726,7 @@ static fsal_status_t glusterfs_reopen2(struct fsal_obj_handle *obj_hdl,
 #endif
 
 	/* This can block over an I/O operation. */
-	PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 	old_openflags = my_share_fd->openflags;
 
@@ -1722,7 +1734,7 @@ static fsal_status_t glusterfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	status = check_share_conflict(&myself->share, openflags, false);
 
 	if (FSAL_IS_ERROR(status)) {
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 		return status;
 	}
 
@@ -1731,7 +1743,7 @@ static fsal_status_t glusterfs_reopen2(struct fsal_obj_handle *obj_hdl,
 	 */
 	update_share_counters(&myself->share, old_openflags, openflags);
 
-	PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+	PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	status = glusterfs_open_my_fd(myself, openflags, posix_flags, my_fd);
 
@@ -1745,13 +1757,13 @@ static fsal_status_t glusterfs_reopen2(struct fsal_obj_handle *obj_hdl,
 		/* We had a failure on open - we need to revert the share.
 		 * This can block over an I/O operation.
 		 */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->share,
 				      openflags,
 				      old_openflags);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 	}
 
 	return status;
@@ -1774,7 +1786,6 @@ static fsal_status_t glusterfs_read2(struct fsal_obj_handle *obj_hdl,
 	fsal_status_t status;
 	int retval = 0;
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 
 	if (info != NULL) {
@@ -1794,7 +1805,7 @@ static fsal_status_t glusterfs_read2(struct fsal_obj_handle *obj_hdl,
 
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, FSAL_O_READ,
-			 &has_lock, &need_fsync, &closefd, false);
+			 &has_lock, &closefd, false);
 
 	if (FSAL_IS_ERROR(status))
 		goto out;
@@ -1834,7 +1845,7 @@ static fsal_status_t glusterfs_read2(struct fsal_obj_handle *obj_hdl,
 		glusterfs_close_my_fd(&my_fd);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 
@@ -1858,7 +1869,6 @@ static fsal_status_t glusterfs_write2(struct fsal_obj_handle *obj_hdl,
 	int retval = 0;
 	struct glusterfs_fd my_fd = {0};
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	fsal_openflags_t openflags = FSAL_O_WRITE;
 	struct glusterfs_export *glfs_export =
@@ -1882,7 +1892,7 @@ static fsal_status_t glusterfs_write2(struct fsal_obj_handle *obj_hdl,
 
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, openflags,
-			 &has_lock, &need_fsync, &closefd, false);
+			 &has_lock, &closefd, false);
 
 	if (FSAL_IS_ERROR(status))
 		goto out;
@@ -1922,7 +1932,7 @@ static fsal_status_t glusterfs_write2(struct fsal_obj_handle *obj_hdl,
 		glusterfs_close_my_fd(&my_fd);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -1936,7 +1946,7 @@ static fsal_status_t glusterfs_commit2(struct fsal_obj_handle *obj_hdl,
 {
 	fsal_status_t status;
 	int retval;
-	struct glusterfs_fd *out_fd = NULL;
+	struct glusterfs_fd tmp_fd = {0, NULL}, *out_fd = &tmp_fd;
 	struct glusterfs_handle *myself = NULL;
 	bool has_lock = false;
 	bool closefd = false;
@@ -1992,7 +2002,7 @@ out:
 		glusterfs_close_my_fd(out_fd);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -2013,7 +2023,6 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 	int retval = 0;
 	struct glusterfs_fd my_fd = {0};
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	bool bypass = false;
 	fsal_openflags_t openflags = FSAL_O_RDWR;
@@ -2093,7 +2102,7 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 
 	/* Get a usable file descriptor */
 	status = find_fd(&my_fd, obj_hdl, bypass, state, openflags,
-			 &has_lock, &need_fsync, &closefd, true);
+			 &has_lock, &closefd, true);
 
 	if (FSAL_IS_ERROR(status)) {
 		LogCrit(COMPONENT_FSAL, "Unable to find fd for lock operation");
@@ -2106,6 +2115,7 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 
 	if (retval /* && lock_op == FSAL_OP_LOCK */) {
 		retval = errno;
+		int rc = 0;
 
 		LogDebug(COMPONENT_FSAL,
 			 "fcntl returned %d %s",
@@ -2113,10 +2123,10 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 
 		if (conflicting_lock != NULL) {
 			/* Get the conflicting lock */
-			retval = glfs_posix_lock(my_fd.glfd, F_GETLK,
+			rc = glfs_posix_lock(my_fd.glfd, F_GETLK,
 						 &lock_args);
 
-			if (retval) {
+			if (rc) {
 				retval = errno; /* we lose the initial error */
 				LogCrit(COMPONENT_FSAL,
 					"After failing a lock request, I couldn't even get the details of who owns the lock.");
@@ -2153,7 +2163,7 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 		glusterfs_close_my_fd(&my_fd);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return fsalstat(posix2fsal_error(retval), retval);
 }
@@ -2182,7 +2192,6 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 	int retval = 0;
 	fsal_openflags_t openflags = FSAL_O_ANY;
 	bool has_lock = false;
-	bool need_fsync = false;
 	bool closefd = false;
 	struct glusterfs_fd my_fd = {0};
 	struct glusterfs_export *glfs_export =
@@ -2227,7 +2236,7 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 		 * handle via handle.
 		 */
 		status = find_fd(&my_fd, obj_hdl, bypass, state, openflags,
-				 &has_lock, &need_fsync, &closefd, false);
+				 &has_lock, &closefd, false);
 
 		if (FSAL_IS_ERROR(status))
 			goto out;
@@ -2302,7 +2311,7 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 
 			FSAL_SET_MASK(attr_valid, XATTR_ACL);
 			status =
-			  glusterfs_process_acl(glfs_export->gl_fs,
+			  glusterfs_process_acl(glfs_export->gl_fs->fs,
 						myself->glhandle,
 						attrib_set, &buffxstat);
 
@@ -2326,7 +2335,7 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 		 * fix needed in there..it doesn't convert the mask flags
 		 * to corresponding gluster flags.
 		 */
-		retval = glfs_h_setattrs(glfs_export->gl_fs,
+		retval = glfs_h_setattrs(glfs_export->gl_fs->fs,
 				     myself->glhandle,
 				     &buffxstat.buffstat,
 				     mask);
@@ -2356,7 +2365,7 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 		glusterfs_close_my_fd(&my_fd);
 
 	if (has_lock)
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	return status;
 }
@@ -2367,8 +2376,10 @@ static fsal_status_t glusterfs_setattr2(struct fsal_obj_handle *obj_hdl,
 static fsal_status_t glusterfs_close2(struct fsal_obj_handle *obj_hdl,
 				      struct state_t *state)
 {
-	struct glusterfs_fd *my_fd = (struct glusterfs_fd *)(state + 1);
 	struct glusterfs_handle *myself = NULL;
+	struct glusterfs_fd *my_fd = &container_of(state,
+						   struct glusterfs_state_fd,
+						   state)->glusterfs_fd;
 
 	myself = container_of(obj_hdl,
 			      struct glusterfs_handle,
@@ -2380,13 +2391,13 @@ static fsal_status_t glusterfs_close2(struct fsal_obj_handle *obj_hdl,
 		/* This is a share state, we must update the share counters */
 
 		/* This can block over an I/O operation. */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 		update_share_counters(&myself->share,
 				      my_fd->openflags,
 				      FSAL_O_CLOSED);
 
-		PTHREAD_RWLOCK_unlock(&obj_hdl->lock);
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 	}
 
 	return glusterfs_close_my_fd(my_fd);

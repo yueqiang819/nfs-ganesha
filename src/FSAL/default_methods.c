@@ -261,7 +261,8 @@ static const char *get_name(struct fsal_export *exp_hdl)
  * Nothing to do in the default case
  */
 
-static void export_unexport(struct fsal_export *exp_hdl)
+static void export_unexport(struct fsal_export *exp_hdl,
+			    struct fsal_obj_handle *root_obj)
 {
 	/* return */
 }
@@ -581,9 +582,23 @@ struct state_t *alloc_state(struct fsal_export *exp_hdl,
  * @returns NULL on failure otherwise a state structure.
  */
 
-void free_state(struct state_t *state)
+void free_state(struct fsal_export *exp_hdl, struct state_t *state)
 {
 	gsh_free(state);
+}
+
+/**
+ * @brief Check to see if a user is superuser
+ *
+ * @param[in] exp_hdl               Export state_t is associated with
+ * @param[in] creds                 Credentials to check for superuser
+ *
+ * @returns NULL on failure otherwise a state structure.
+ */
+
+bool is_superuser(struct fsal_export *exp_hdl, const struct user_cred *creds)
+{
+	return (creds->caller_uid == 0);
 }
 
 /* Default fsal export method vector.
@@ -622,6 +637,7 @@ struct export_ops def_export_ops = {
 	.get_write_verifier = global_verifier,
 	.alloc_state = alloc_state,
 	.free_state = free_state,
+	.is_superuser = is_superuser,
 };
 
 /* fsal_obj_handle common methods
@@ -719,6 +735,39 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
+/* release_readdir_cookie
+ * default is NOOP
+ */
+
+void release_readdir_cookie(struct fsal_obj_handle *dir_hdl,
+			    fsal_cookie_t *cookie)
+{
+	/* return */
+}
+
+/* compute_readdir_cookie
+ * default is to return 0 which indicates not supported
+ */
+
+fsal_cookie_t compute_readdir_cookie(struct fsal_obj_handle *parent,
+				     const char *name)
+{
+	return 0;
+}
+
+/* dirent_cmp
+ * Sort dirents by name.
+ */
+
+int dirent_cmp(struct fsal_obj_handle *parent,
+	       const char *name1, fsal_cookie_t cookie1,
+	       const char *name2, fsal_cookie_t cookie2)
+{
+	/* Not supported by default. */
+	assert(false);
+	return 0;
+}
+
 /* create
  * default case not supported
  */
@@ -753,7 +802,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 
 static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 			      const char *name, object_file_type_t nodetype,
-			      fsal_dev_t *dev, struct attrlist *attrib,
+			      struct attrlist *attrib,
 			      struct fsal_obj_handle **handle,
 			      struct attrlist *attrs_out)
 {
@@ -1524,6 +1573,9 @@ struct fsal_obj_ops def_handle_ops = {
 	.merge = handle_merge,
 	.lookup = lookup,
 	.readdir = read_dirents,
+	.release_readdir_cookie = release_readdir_cookie,
+	.compute_readdir_cookie = compute_readdir_cookie,
+	.dirent_cmp = dirent_cmp,
 	.create = create,
 	.mkdir = makedir,
 	.mknode = makenode,

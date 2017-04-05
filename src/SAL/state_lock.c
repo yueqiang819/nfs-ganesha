@@ -2453,17 +2453,21 @@ state_status_t state_test(struct fsal_obj_handle *obj,
 		status = do_lock_op(obj, state, FSAL_OP_LOCKT, owner,
 				    lock, holder, conflict, false);
 
-		if (status != STATE_SUCCESS && status != STATE_LOCK_CONFLICT) {
-			LogMajor(COMPONENT_STATE,
-				 "Got error from FSAL lock operation, error=%s",
-				 state_err_str(status));
-		}
-		if (status == STATE_SUCCESS)
-			LogFullDebug(COMPONENT_STATE, "No Conflict");
-		else
+		switch (status) {
+		case STATE_SUCCESS:
+			LogFullDebug(COMPONENT_STATE, "Lock success");
+			break;
+		case STATE_LOCK_CONFLICT:
 			LogLock(COMPONENT_STATE, NIV_FULL_DEBUG,
 				"Conflict from FSAL",
 				obj, *holder, conflict);
+			break;
+		default:
+			LogMajor(COMPONENT_STATE,
+				 "Got error from FSAL lock operation, error=%s",
+				 state_err_str(status));
+			break;
+		}
 	}
 
 	if (isFullDebug(COMPONENT_STATE) && isFullDebug(COMPONENT_MEMLEAKS))
@@ -2566,9 +2570,11 @@ state_status_t state_lock(struct fsal_obj_handle *obj,
 				LogEvent(COMPONENT_STATE,
 					 "Lock Owner Export Conflict, Lock held for export %d (%s), request for export %d (%s)",
 					 found_entry->sle_export->export_id,
-					 found_entry->sle_export->fullpath,
+					 op_ctx_export_path(
+						found_entry->sle_export),
 					 op_ctx->ctx_export->export_id,
-					 op_ctx->ctx_export->fullpath);
+					 op_ctx_export_path(
+							op_ctx->ctx_export));
 				LogEntry(
 					"Found lock entry belonging to another export",
 					found_entry);
@@ -2602,9 +2608,9 @@ state_status_t state_lock(struct fsal_obj_handle *obj,
 			LogEvent(COMPONENT_STATE,
 				 "Lock Owner Export Conflict, Lock held for export %d (%s), request for export %d (%s)",
 				 found_entry->sle_export->export_id,
-				 found_entry->sle_export->fullpath,
+				 op_ctx_export_path(found_entry->sle_export),
 				 op_ctx->ctx_export->export_id,
-				 op_ctx->ctx_export->fullpath);
+				 op_ctx_export_path(op_ctx->ctx_export));
 
 			LogEntry("Found lock entry belonging to another export",
 				 found_entry);
@@ -3537,7 +3543,7 @@ void state_export_unlock_all(void)
 	if (errcnt == STATE_ERR_MAX) {
 		LogFatal(COMPONENT_STATE,
 			 "Could not complete cleanup of locks for %s",
-			 op_ctx->ctx_export->fullpath);
+			 op_ctx_export_path(op_ctx->ctx_export));
 	}
 }
 

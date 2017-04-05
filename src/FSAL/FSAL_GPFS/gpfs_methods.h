@@ -1,6 +1,9 @@
 /* GPFS methods for handles
  */
 
+#ifndef GPFS_METHODS_H
+#define GPFS_METHODS_H
+
 #include <fcntl.h>
 #include "include/gpfs_nfs.h"
 
@@ -138,9 +141,6 @@ fsal_status_t gpfs_write2(struct fsal_obj_handle *obj_hdl,
 fsal_status_t gpfs_commit2(struct fsal_obj_handle *obj_hdl,
 			   off_t offset,
 			   size_t len);
-fsal_status_t gpfs_commit_fd(int my_fd, struct fsal_obj_handle *obj_hdl,
-			   off_t offset,
-			   size_t len);
 fsal_status_t gpfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 			    struct state_t *state,
 			    void *owner,
@@ -153,50 +153,15 @@ fsal_status_t gpfs_setattr2(struct fsal_obj_handle *obj_hdl,
 			    bool bypass,
 			    struct state_t *state,
 			    struct attrlist *attrib_set);
-fsal_status_t gpfs_open(struct fsal_obj_handle *obj_hdl,
-			fsal_openflags_t openflags);
-fsal_status_t gpfs_reopen(struct fsal_obj_handle *obj_hdl,
-			  fsal_openflags_t openflags);
 fsal_openflags_t gpfs_status(struct fsal_obj_handle *obj_hdl);
-fsal_status_t gpfs_read(struct fsal_obj_handle *obj_hdl,
-			uint64_t offset,
-			size_t buffer_size, void *buffer, size_t *read_amount,
-			bool *end_of_file);
-fsal_status_t gpfs_read_plus(struct fsal_obj_handle *obj_hdl,
-			uint64_t offset,
-			size_t buffer_size, void *buffer, size_t *read_amount,
-			bool *end_of_file, struct io_info *info);
 fsal_status_t gpfs_read_plus_fd(int my_fs,
 			uint64_t offset,
 			size_t buffer_size, void *buffer, size_t *read_amount,
 			bool *end_of_file, struct io_info *info, int expfd);
-fsal_status_t gpfs_write(struct fsal_obj_handle *obj_hdl,
-			 uint64_t offset,
-			 size_t buffer_size, void *buffer,
-			 size_t *write_amount, bool *fsal_stable);
-fsal_status_t gpfs_write_plus(struct fsal_obj_handle *obj_hdl,
-			 uint64_t offset,
-			 size_t buffer_size, void *buffer,
-			 size_t *write_amount, bool *fsal_stable,
-			 struct io_info *info);
-fsal_status_t gpfs_write_plus_fd(int my_fd,
-			 uint64_t offset,
-			 size_t buffer_size, void *buffer,
-			 size_t *write_amount, bool *fsal_stable,
-			 struct io_info *info, int expfd);
 fsal_status_t gpfs_seek(struct fsal_obj_handle *obj_hdl,
 			 struct io_info *info);
 fsal_status_t gpfs_io_advise(struct fsal_obj_handle *obj_hdl,
 			 struct io_hints *hints);
-fsal_status_t gpfs_commit(struct fsal_obj_handle *obj_hdl,	/* sync */
-			  off_t offset, size_t len);
-fsal_status_t gpfs_commit_fd(int my_fd, struct fsal_obj_handle *obj_hdl,
-			     off_t offset, size_t len);
-fsal_status_t gpfs_lock_op(struct fsal_obj_handle *obj_hdl,
-			   void *p_owner,
-			   fsal_lock_op_t lock_op,
-			   fsal_lock_param_t *request_lock,
-			   fsal_lock_param_t *conflicting_lock);
 fsal_status_t gpfs_share_op(struct fsal_obj_handle *obj_hdl, void *p_owner,
 			    fsal_share_param_t request_share);
 fsal_status_t gpfs_close(struct fsal_obj_handle *obj_hdl);
@@ -207,8 +172,4 @@ gpfs_create_export(struct fsal_module *fsal_hdl, void *parse_node,
 		   struct config_error_type *err_type,
 		   const struct fsal_up_vector *up_ops);
 
-/* Multiple file descriptor methods */
-struct state_t *gpfs_alloc_state(struct fsal_export *exp_hdl,
-				 enum state_type state_type,
-				 struct state_t *related_state);
-
+#endif

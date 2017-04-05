@@ -733,8 +733,6 @@ static const char *config_type_str(enum config_type type)
 		return "CONFIG_BOOLBIT";
 	case CONFIG_IP_ADDR:
 		return "CONFIG_IP_ADDR";
-	case CONFIG_INET_PORT:
-		return "CONFIG_INET_PORT";
 	case CONFIG_BLOCK:
 		return "CONFIG_BLOCK";
 	case CONFIG_PROC:
@@ -862,9 +860,6 @@ static bool do_block_init(struct config_node *blk_node,
 				errors++;
 			}
 			break;
-		case CONFIG_INET_PORT:
-			*(uint16_t *)param_addr = htons(item->u.ui16.def);
-			break;
 		case CONFIG_BLOCK:
 			(void) item->u.blk.init(NULL, param_addr);
 			break;
@@ -964,7 +959,7 @@ static int do_block_load(struct config_node *blk,
 		node = lookup_node(&blk->u.nterm.sub_nodes, item->name);
 		if ((item->flags & CONFIG_MANDATORY) && (node == NULL)) {
 			err_type->missing = true;
-			err_type->errors++;
+			errors = ++err_type->errors;
 			config_proc_error(blk, err_type,
 					  "Mandatory field, %s is missing from block (%s)",
 					  item->name, blk->u.nterm.name);
@@ -979,7 +974,7 @@ static int do_block_load(struct config_node *blk,
 						  "Parameter %s set more than once",
 						  next_node->u.nterm.name);
 				err_type->unique = true;
-				err_type->errors++;
+				errors = ++err_type->errors;
 				node = next_node;
 				continue;
 			}
@@ -1009,7 +1004,7 @@ static int do_block_load(struct config_node *blk,
 						  node->u.nterm.name,
 						  term_node->u.term.varvalue);
 				err_type->invalid = true;
-				err_type->errors++;
+				errors = ++err_type->errors;
 				node = next_node;
 				continue;
 			}
@@ -1053,8 +1048,18 @@ static int do_block_load(struct config_node *blk,
 				break;
 			case CONFIG_UINT64:
 				if (convert_number(term_node, item,
-						   &num64, err_type))
+						   &num64, err_type)) {
 					*(uint64_t *)param_addr = num64;
+					if (item->flags & CONFIG_MARK_SET) {
+						void *mask_addr;
+
+						mask_addr =
+						((char *)param_struct
+						 + item->u.ui64.set_off);
+						*(uint32_t *)mask_addr
+						|= item->u.ui64.bit;
+					}
+				}
 				break;
 			case CONFIG_ANON_ID:
 				if (convert_number(term_node, item,
@@ -1185,12 +1190,6 @@ static int do_block_load(struct config_node *blk,
 						  (sockaddr_t *)param_addr,
 						  err_type);
 				break;
-			case CONFIG_INET_PORT:
-				if (convert_number(term_node, item,
-						   &num64, err_type))
-					*(uint16_t *)param_addr =
-						htons((uint16_t)num64);
-				break;
 			case CONFIG_BLOCK:
 				if (!proc_block(node, item, param_addr,
 						err_type))
@@ -1206,7 +1205,7 @@ static int do_block_load(struct config_node *blk,
 						  "Cannot set value for type(%d) yet",
 						  item->type);
 				err_type->internal = true;
-				err_type->errors++;
+				errors = ++err_type->errors;
 				break;
 				}
 			node = next_node;

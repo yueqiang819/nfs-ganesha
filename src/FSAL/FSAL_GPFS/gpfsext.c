@@ -62,16 +62,16 @@ static void valgrind_kganesha(struct kxArgs *args)
 	{
 		struct name_handle_arg *arg = (void *)args->arg2;
 
-		VALGRIND_MAKE_MEM_DEFINED(arg->handle->f_handle,
-					  arg->handle->handle_size);
+		VALGRIND_MAKE_MEM_DEFINED(arg->handle,
+					  sizeof(struct gpfs_file_handle));
 		break;
 	}
 	case OPENHANDLE_GET_HANDLE:
 	{
 		struct get_handle_arg *arg = (void *)args->arg2;
 
-		VALGRIND_MAKE_MEM_DEFINED(arg->out_fh->f_handle,
-					  arg->out_fh->handle_size);
+		VALGRIND_MAKE_MEM_DEFINED(arg->out_fh,
+					  sizeof(struct gpfs_file_handle));
 		break;
 	}
 	case OPENHANDLE_STAT_BY_NAME:
@@ -85,8 +85,8 @@ static void valgrind_kganesha(struct kxArgs *args)
 	{
 		struct create_name_arg *arg = (void *)args->arg2;
 
-		VALGRIND_MAKE_MEM_DEFINED(arg->new_fh->f_handle,
-					  arg->new_fh->handle_size);
+		VALGRIND_MAKE_MEM_DEFINED(arg->new_fh,
+					  sizeof(struct gpfs_file_handle));
 		break;
 	}
 	case OPENHANDLE_READLINK_BY_FH:
@@ -141,12 +141,26 @@ static void valgrind_kganesha(struct kxArgs *args)
 int gpfs_ganesha(int op, void *oarg)
 {
 	int rc;
-	static int gpfs_fd = -1;
+	static int gpfs_fd = -2;
 	struct kxArgs args;
 
 	if (gpfs_fd < 0) {
+		/* If we enable fsal_trace in the config, the following
+		 * LogFatal would call us here again for fsal tracing!
+		 * Since we can't log as we are unable to open the device,
+		 * just exit.
+		 *
+		 * Also, exit handler _dl_fini() will call gpfs_unload
+		 * which will call release_log_facility that tries to
+		 * acquire log_rwlock a second time! So do an immediate
+		 * exit.
+		 */
+		if (gpfs_fd == -1) /* failed in a prior invocation */
+			_exit(1);
+
+		assert(gpfs_fd == -2);
 		gpfs_fd = open(GPFS_DEVNAMEX, O_RDONLY);
-		if (gpfs_fd < 0)
+		if (gpfs_fd == -1)
 			LogFatal(COMPONENT_FSAL,
 				"open of %s failed with errno %d",
 				GPFS_DEVNAMEX, errno);
