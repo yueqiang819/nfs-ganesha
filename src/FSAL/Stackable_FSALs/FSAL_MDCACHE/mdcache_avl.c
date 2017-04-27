@@ -169,14 +169,6 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 	 * up.
 	 */
 
-	/* Check if we need to release a marked cookie. */
-	if (dirent->flags & DIR_ENTRY_COOKIE_MARKED) {
-		struct fsal_obj_handle *obj;
-
-		obj = &parent->obj_handle;
-		obj->obj_ops.release_readdir_cookie(obj, &dirent->ck);
-	}
-
 	/* Remove from chunk */
 	glist_del(&dirent->chunk_list);
 
@@ -438,7 +430,7 @@ again:
 			}
 
 			if (isFullDebug(COMPONENT_CACHE_INODE)) {
-				char str[LOG_BUFF_LEN];
+				char str[LOG_BUFF_LEN] = "\0";
 				struct display_buffer dspbuf = {
 							sizeof(str), str, str };
 
@@ -463,8 +455,8 @@ again:
 			 * handle digest. Discard the old dirent and try again.
 			 */
 			if (isFullDebug(COMPONENT_CACHE_INODE)) {
-				char str1[LOG_BUFF_LEN / 2];
-				char str2[LOG_BUFF_LEN / 2];
+				char str1[LOG_BUFF_LEN / 2] = "\0";
+				char str2[LOG_BUFF_LEN / 2] = "\0";
 				struct display_buffer dspbuf1 = {
 						sizeof(str1), str1, str1 };
 				struct display_buffer dspbuf2 = {
@@ -511,7 +503,7 @@ again:
 				v2 = NULL;
 			} else {
 				if (isFullDebug(COMPONENT_CACHE_INODE)) {
-					char str[LOG_BUFF_LEN];
+					char str[LOG_BUFF_LEN] = "\0";
 					struct display_buffer dspbuf = {
 							sizeof(str), str, str };
 

@@ -44,7 +44,7 @@ set(GANESHA_PATCH_LEVEL )
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
 # If used, it is always of the form "-whateveryouwant"
-set(GANESHA_EXTRA_VERSION -dev-20)
+set(GANESHA_EXTRA_VERSION -rc2)
 
 set(GANESHA_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL}${GANESHA_EXTRA_VERSION})
 set(GANESHA_BASE_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL})
@@ -202,6 +202,7 @@ option(USE_FSAL_PANFS "build PanFS support in VFS FSAL" OFF)
 option(USE_FSAL_GLUSTER "build GLUSTER FSAL shared library" ON)
 option(USE_FSAL_NULL "build NULL FSAL shared library" ON)
 option(USE_FSAL_RGW "build RGW FSAL shared library" OFF)
+option(USE_FSAL_MEM "build Memory FSAL shared library" ON)
 option(USE_TOOL_MULTILOCK "build multilock tool" OFF)
 
 # nTIRPC
@@ -484,26 +485,28 @@ if( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_GREATER "2.6" )
   find_package(Threads REQUIRED)
 endif( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_GREATER "2.6" )
 
-find_package(Krb5 REQUIRED gssapi)
-check_include_files(gssapi.h HAVE_GSSAPI_H)
-if (NOT HAVE_GSSAPI_H)
-  # Debian/Ubuntu 12 magic
-  set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I/usr/include/mit-krb5/")
+if (USE_GSS)
+  find_package(Krb5 REQUIRED gssapi)
   check_include_files(gssapi.h HAVE_GSSAPI_H)
-endif(NOT HAVE_GSSAPI_H)
-
-if(KRB5_FOUND AND HAVE_GSSAPI_H)
-  set(HAVE_KRB5 ON)
-  set(KRB5_VERSION 194)  # hand code until we do krb5-config --version magic
-  set(_HAVE_GSSAPI ON)
-else(KRB5_FOUND AND HAVE_GSSAPI_H)
-  if (NOT KRB5_FOUND)
-    message(FATAL_ERROR "Cannot find kerberos libraries")
-  endif(NOT KRB5_FOUND)
   if (NOT HAVE_GSSAPI_H)
-    message(FATAL_ERROR "Cannot find GSS libraries")
-  endif (NOT HAVE_GSSAPI_H)
-endif(KRB5_FOUND AND HAVE_GSSAPI_H)
+    # Debian/Ubuntu 12 magic
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -I/usr/include/mit-krb5/")
+    check_include_files(gssapi.h HAVE_GSSAPI_H)
+  endif(NOT HAVE_GSSAPI_H)
+
+  if(KRB5_FOUND AND HAVE_GSSAPI_H)
+    set(HAVE_KRB5 ON)
+    set(KRB5_VERSION 194)  # hand code until we do krb5-config --version magic
+    set(_HAVE_GSSAPI ON)
+  else(KRB5_FOUND AND HAVE_GSSAPI_H)
+    if (NOT KRB5_FOUND)
+      message(FATAL_ERROR "Cannot find kerberos libraries")
+    endif(NOT KRB5_FOUND)
+    if (NOT HAVE_GSSAPI_H)
+      message(FATAL_ERROR "Cannot find GSS libraries")
+    endif (NOT HAVE_GSSAPI_H)
+  endif(KRB5_FOUND AND HAVE_GSSAPI_H)
+endif(USE_GSS)
 
 if (USE_ADMIN_TOOLS)
   find_package(PythonInterp)
@@ -718,8 +721,13 @@ include_directories(
   "${PROJECT_BINARY_DIR}/include"
   "${PROJECT_SOURCE_DIR}/include"
   "${OS_INCLUDE_DIR}"
-  "${KRB5_INCLUDE_DIRS}"
 )
+
+if (HAVE_KRB5)
+  include_directories(
+    "${KRB5_INCLUDE_DIRS}"
+    )
+endif (HAVE_KRB5)
 
 # Fixup loose bits of autotools legacy
 set(_USE_9P ${USE_9P})
@@ -873,8 +881,9 @@ if (USE_SYSTEM_NTIRPC)
   find_package(NTIRPC ${NTIRPC_MIN_VERSION} REQUIRED)
 else (USE_SYSTEM_NTIRPC)
   # Set options for submodule
-  option(USE_RPC_RDMA "Use RDMA" ${USE_NFS_RDMA})
-  option(USE_TIRPC_EPOLL "Use EPOLL" ${USE_TIRPC_EPOLL})
+  set(USE_RPC_RDMA ${USE_NFS_RDMA} CACHE BOOL "Use RDMA")
+  set(TIRPC_EPOLL ${TIRPC_EPOLL} CACHE BOOL "Use EPOLL")
+  set(USE_GSS ${USE_GSS} CACHE BOOL "Use GSS")
   add_subdirectory(libntirpc)
   set(NTIRPC_LIBRARY ntirpc)
   set(NTIRPC_INCLUDE_DIR "${PROJECT_SOURCE_DIR}/libntirpc/ntirpc/")
@@ -963,6 +972,7 @@ message(STATUS "USE_FSAL_GPFS = ${USE_FSAL_GPFS}")
 message(STATUS "USE_FSAL_ZFS = ${USE_FSAL_ZFS}")
 message(STATUS "USE_FSAL_GLUSTER = ${USE_FSAL_GLUSTER}")
 message(STATUS "USE_FSAL_NULL = ${USE_FSAL_NULL}")
+message(STATUS "USE_FSAL_MEM = ${USE_FSAL_MEM}")
 message(STATUS "USE_SYSTEM_NTIRPC = ${USE_SYSTEM_NTIRPC}")
 message(STATUS "USE_DBUS = ${USE_DBUS}")
 message(STATUS "USE_CB_SIMULATOR = ${USE_CB_SIMULATOR}")
@@ -1061,6 +1071,11 @@ set(USE_FSAL_ZFS ${USE_FSAL_ZFS}
    FORCE)
 
 set(USE_FSAL_GLUSTER ${USE_FSAL_GLUSTER}
+  CACHE BOOL
+   "build GLUSTER FSAL"
+   FORCE)
+
+set(USE_FSAL_MEM ${USE_FSAL_MEM}
   CACHE BOOL
    "build GLUSTER FSAL"
    FORCE)
@@ -1239,6 +1254,12 @@ if(USE_FSAL_NULL)
 else(USE_FSAL_NULL)
     set(BCOND_NULLFS "%bcond_with")
 endif(USE_FSAL_NULL)
+
+if(USE_FSAL_MEM)
+    set(BCOND_MEM "%bcond_without")
+else(USE_FSAL_MEM)
+    set(BCOND_MEM "%bcond_with")
+endif(USE_FSAL_MEM)
 
 if(USE_9P_RDMA)
     set(BCOND_RDMA "%bcond_without")

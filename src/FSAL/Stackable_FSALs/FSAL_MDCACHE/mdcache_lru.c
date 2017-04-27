@@ -81,10 +81,6 @@
  * operation) have a positive refcount, and threfore should not be present
  * at the cold end of an lru queue if the cache is well-sized.
  *
- * Cache entries with lock and open state are not eligible for collection
- * under ordinary circumstances, so are kept on a separate lru_noscan
- * list to retain constant time.
- *
  * As noted below, initial references to cache entries may only be granted
  * under the cache inode hash table latch.  Likewise, entries must first be
  * made unreachable to the cache inode hash table, then independently reach
@@ -105,13 +101,12 @@ struct lru_q {
 
 
 /**
- * A single queue lane, holding both movable and noscan entries.
+ * A single queue lane, holding all entries.
  */
 
 struct lru_q_lane {
 	struct lru_q L1;
 	struct lru_q L2;
-	struct lru_q noscan;	/* uncollectable, due to state */
 	struct lru_q cleanup;	/* deferred cleanup */
 	pthread_mutex_t mtx;
 	/* LRU thread scan position */
@@ -217,7 +212,7 @@ static const uint32_t FD_FALLBACK_LIMIT = 0x400;
 /**
  * @brief Initialize a single base queue.
  *
- * This function initializes a single queue partition (L1, L1 noscan, L2,
+ * This function initializes a single queue partition (L1, L2,
  * etc)
  */
 static inline void
@@ -245,7 +240,6 @@ lru_init_queues(void)
 		/* init lane queues */
 		lru_init_queue(&LRU[ix].L1, LRU_ENTRY_L1);
 		lru_init_queue(&LRU[ix].L2, LRU_ENTRY_L2);
-		lru_init_queue(&LRU[ix].noscan, LRU_ENTRY_NOSCAN);
 		lru_init_queue(&LRU[ix].cleanup, LRU_ENTRY_CLEANUP);
 	}
 }
@@ -268,9 +262,6 @@ lru_queue_of(mdcache_entry_t *entry)
 	struct lru_q *q;
 
 	switch (entry->lru.qid) {
-	case LRU_ENTRY_NOSCAN:
-		q = &LRU[(entry->lru.lane)].noscan;
-		break;
 	case LRU_ENTRY_L1:
 		q = &LRU[(entry->lru.lane)].L1;
 		break;
@@ -362,38 +353,6 @@ lru_insert_entry(mdcache_entry_t *entry, struct lru_q *q, enum lru_edge edge)
 	lru_insert(lru, q, edge);
 
 	QUNLOCK(qlane);
-}
-
-/**
- * @brief Mark an entry noscan
- *
- * @note The caller @a MUST hold the lane lock
- * @note The entry @a MUST @a NOT be on the CLEANUP queue
- *
- * @param[in] entry  The entry to mark noscan
- * @param[in] flags  (TBD)
- */
-static inline void
-cond_noscan_entry(mdcache_entry_t *entry, uint32_t flags)
-{
-	mdcache_lru_t *lru = &entry->lru;
-
-	if (lru->flags & LRU_CLEANUP)
-		return;
-
-	if (!(lru->qid == LRU_ENTRY_NOSCAN)) {
-		struct lru_q *q;
-
-		/* out with the old queue */
-		q = lru_queue_of(entry);
-		LRU_DQ_SAFE(lru, q);
-
-		/* in with the new */
-		q = &LRU[(lru->lane)].noscan;
-		lru_insert(lru, q, LRU_LRU);
-		++(q->size);
-
-	} /* ! NOSCAN */
 }
 
 /**
@@ -1164,8 +1123,7 @@ static inline void init_rw_locks(mdcache_entry_t *entry)
 	PTHREAD_RWLOCK_init(&entry->content_lock, NULL);
 }
 
-static fsal_status_t
-alloc_cache_entry(mdcache_entry_t **entry)
+mdcache_entry_t *alloc_cache_entry(void)
 {
 	mdcache_entry_t *nentry;
 
@@ -1175,8 +1133,8 @@ alloc_cache_entry(mdcache_entry_t **entry)
 	init_rw_locks(nentry);
 
 	(void) atomic_inc_int64_t(&lru_state.entries_used);
-	*entry = nentry;
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
+
+	return nentry;
 }
 
 /**
@@ -1187,15 +1145,11 @@ alloc_cache_entry(mdcache_entry_t **entry)
  * this function always returns an entry with two references (one for the
  * sentinel, one to allow the caller's use.)
  *
- * @param[out] entry Returned status
- *
- * @return CACHE_INODE_SUCCESS or error.
+ * @return a usable entry
  */
-fsal_status_t
-mdcache_lru_get(mdcache_entry_t **entry)
+mdcache_entry_t *mdcache_lru_get(void)
 {
 	mdcache_lru_t *lru;
-	fsal_status_t status = {0, 0};
 	mdcache_entry_t *nentry = NULL;
 
 	lru = lru_try_reap_entry();
@@ -1208,125 +1162,23 @@ mdcache_lru_get(mdcache_entry_t **entry)
 		memset(&nentry->attrs, 0, sizeof(nentry->attrs));
 		init_rw_locks(nentry);
 	} else {
-		/* alloc entry */
-		status = alloc_cache_entry(&nentry);
-		if (!nentry)
-			goto out;
+		/* alloc entry (if fails, aborts) */
+		nentry = alloc_cache_entry();
 	}
 
 	/* Since the entry isn't in a queue, nobody can bump refcnt. */
 	nentry->lru.refcnt = 2;
-	nentry->lru.noscan_refcnt = 0;
 	nentry->lru.cf = 0;
 	nentry->lru.lane = lru_lane_of_entry(nentry);
 
 #ifdef USE_LTTNG
-	tracepoint(mdcache, mdc_lru_ref,
+	tracepoint(mdcache, mdc_lru_get,
 		   __func__, __LINE__, nentry, nentry->lru.refcnt);
 #endif
 	/* Enqueue. */
 	lru_insert_entry(nentry, &LRU[nentry->lru.lane].L1, LRU_LRU);
 
- out:
-	*entry = nentry;
-	return status;
-}
-
-/**
- * @brief Function to let the state layer mark an entry noscan
- *
- * This function moves the given entry to the noscan queue partition
- * for its lane.  If the entry is already noscan, it is a no-op.
- *
- * @param[in] entry  The entry to be moved
- *
- * @return FSAL status
- */
-fsal_status_t
-mdcache_inc_noscan_ref(mdcache_entry_t *entry)
-{
-	uint32_t lane = entry->lru.lane;
-	struct lru_q_lane *qlane = &LRU[lane];
-
-	/* Pin ref is infrequent, and never concurrent because SAL invariantly
-	 * holds the state lock exclusive whenever it is called. */
-	if (entry->lru.flags & LRU_CLEANUP)
-		return fsalstat(ERR_FSAL_STALE, 0);
-
-	QLOCK(qlane);
-
-	/* Mark noscan if not noscan already */
-	cond_noscan_entry(entry, LRU_FLAG_NONE /* future */);
-
-	/* take noscan ref count */
-	entry->lru.noscan_refcnt++;
-
-	QUNLOCK(qlane);		/* !LOCKED (lane) */
-
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/**
- * @brief Function to let the state layer rlease a noscan ref
- *
- * This function moves the given entry out of the noscan queue
- * partition for its lane.  If the entry is not noscan, it is a
- * no-op.
- *
- * @param[in] entry      The entry to be moved
- *
- */
-void mdcache_dec_noscan_ref(mdcache_entry_t *entry)
-{
-	uint32_t lane = entry->lru.lane;
-	mdcache_lru_t *lru = &entry->lru;
-	struct lru_q_lane *qlane = &LRU[lane];
-
-	/* Pin ref is infrequent, and never concurrent because SAL invariantly
-	 * holds the state lock exclusive whenever it is called. */
-	QLOCK(qlane);
-
-	entry->lru.noscan_refcnt--;
-	if (unlikely(entry->lru.noscan_refcnt == 0)) {
-
-		/* entry could infrequently be on the cleanup queue */
-		if (lru->qid == LRU_ENTRY_NOSCAN) {
-			/* remove from noscan */
-			struct lru_q *q = &qlane->noscan;
-			/* XXX skip L1 iteration fixups */
-			glist_del(&lru->q);
-			--(q->size);
-			/* add to MRU of L1 */
-			q = &qlane->L1;
-			lru_insert(lru, q, LRU_MRU);
-			++(q->size);
-		}
-	}
-
-	QUNLOCK(qlane);
-}
-
-/**
- * @brief Return true if a file is noscan.
- *
- * This function returns true if a file is noscan.
- *
- * @param[in] entry The file to be checked
- *
- * @return true if noscan, false otherwise.
- */
-bool
-mdcache_is_noscan(mdcache_entry_t *entry)
-{
-	uint32_t lane = entry->lru.lane;
-	struct lru_q_lane *qlane = &LRU[lane];
-	int rc;
-
-	QLOCK(qlane);
-	rc = (entry->lru.noscan_refcnt > 0);
-	QUNLOCK(qlane);
-
-	return rc;
+	return nentry;
 }
 
 /**
@@ -1489,49 +1341,6 @@ _mdcache_lru_unref(mdcache_entry_t *entry, uint32_t flags, const char *func,
 	}			/* refcnt == 0 */
  out:
 	return freed;
-}
-
-/**
- * @brief Put back a raced initial reference
- *
- * This function returns an entry previously returned from
- * @ref mdcache_lru_get, in the uncommon circumstance that it will not
- * be used.
- *
- * @param[in] entry  The entry on which to release a reference
- * @param[in] flags  Currently significant are and LRU_FLAG_LOCKED
- *                   (indicating that the caller holds the LRU mutex
- *                   lock for this entry.)
- */
-void
-mdcache_lru_putback(mdcache_entry_t *entry, uint32_t flags)
-{
-	bool qlocked = flags & LRU_UNREF_QLOCKED;
-	uint32_t lane = entry->lru.lane;
-	struct lru_q_lane *qlane = &LRU[lane];
-	struct lru_q *q;
-
-	if (!qlocked)
-		QLOCK(qlane);
-
-	q = lru_queue_of(entry);
-	if (q) {
-		/* as of now, entries leaving the cleanup queue
-		 * are LRU_ENTRY_NONE */
-		LRU_DQ_SAFE(&entry->lru, q);
-	}
-
-#ifdef USE_LTTNG
-	tracepoint(mdcache, mdc_lru_unref,
-		   __func__, __LINE__, entry, entry->lru.refcnt);
-#endif
-
-	/* We do NOT call lru_clean_entry, since it was never initialized. */
-	pool_free(mdcache_entry_pool, entry);
-	(void) atomic_dec_int64_t(&lru_state.entries_used);
-
-	if (!qlocked)
-		QUNLOCK(qlane);
 }
 
 /**

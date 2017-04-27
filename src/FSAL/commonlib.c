@@ -380,14 +380,11 @@ const char *fsal_dir_result_str(enum fsal_dir_result result)
 	case DIR_CONTINUE:
 		return "DIR_CONTINUE";
 
-	case DIR_CONTINUE_MARK:
-		return "DIR_CONTINUE_MARK";
+	case DIR_READAHEAD:
+		return "DIR_READAHEAD";
 
 	case DIR_TERMINATE:
 		return "DIR_TERMINATE";
-
-	case DIR_TERMINATE_MARK:
-		return "DIR_TERMINATE_MARK";
 	}
 
 	return "<unknown>";
@@ -460,6 +457,10 @@ int display_attrlist(struct display_buffer *dspbuf,
 {
 	int b_left = display_start(dspbuf);
 
+	if (attr->request_mask == 0 && attr->valid_mask == 0 &&
+	    attr->supported == 0)
+		return display_cat(dspbuf, "No attributes");
+
 	if (b_left > 0 && attr->request_mask != 0)
 		b_left = display_printf(dspbuf, "Request Mask=%08x ",
 					(unsigned int) attr->request_mask);
@@ -470,7 +471,7 @@ int display_attrlist(struct display_buffer *dspbuf,
 
 	if (b_left > 0 && attr->supported != 0)
 		b_left = display_printf(dspbuf, "Supported Mask=%08x ",
-					(unsigned int) attr->valid_mask);
+					(unsigned int) attr->supported);
 
 	if (b_left > 0 && is_obj)
 		b_left = display_printf(dspbuf, "%s",
@@ -521,14 +522,10 @@ void log_attrlist(log_components_t component, log_levels_t level,
 		  const char *reason, struct attrlist *attr, bool is_obj,
 		  char *file, int line, char *function)
 {
-	char str[LOG_BUFF_LEN];
+	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
 
 	(void) display_attrlist(&dspbuf, attr, is_obj);
-
-	if (!isLevel(component, level))
-		return;
-
 
 	DisplayLogComponentLevel(component, file, line, function, level,
 		"%s %s attributes %s",

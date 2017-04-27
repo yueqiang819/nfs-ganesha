@@ -557,11 +557,12 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 
 			/* callback to cache inode */
 			cb_rc = cb(dentry->d_name, hdl, &attrs, dir_state,
-				   (fsal_cookie_t) dentry->d_off, NULL);
+				   (fsal_cookie_t) dentry->d_off);
 
 			fsal_release_attrs(&attrs);
 
-			if (cb_rc >= DIR_TERMINATE)
+			/* Read ahead not supported by this FSAL. */
+			if (cb_rc >= DIR_READAHEAD)
 				goto done;
  skip:
 			bpos += dentry->d_reclen;
@@ -1051,7 +1052,6 @@ fsal_status_t gpfs_lookup_path(struct fsal_export *exp_hdl,
 	fsal_status_t fsal_status;
 	int retval = 0;
 	int dir_fd;
-	int exp_fd = 0;
 	struct fsal_filesystem *fs;
 	struct gpfs_fsal_obj_handle *hdl;
 	struct attrlist attributes;
@@ -1083,7 +1083,7 @@ fsal_status_t gpfs_lookup_path(struct fsal_export *exp_hdl,
 		goto errout;
 	}
 
-	fsal_status = fsal_internal_fd2handle(dir_fd, fh, &exp_fd);
+	fsal_status = fsal_internal_fd2handle(dir_fd, fh);
 	if (FSAL_IS_ERROR(fsal_status))
 		goto fileerr;
 

@@ -184,11 +184,12 @@ static fsal_status_t ceph_fsal_readdir(struct fsal_obj_handle *dir_pub,
 			ceph2fsal_attributes(&stx, &attrs);
 
 			cb_rc = cb(de.d_name, &obj->handle, &attrs, dir_state,
-					de.d_off, NULL);
+					de.d_off);
 
 			fsal_release_attrs(&attrs);
 
-			if (cb_rc >= DIR_TERMINATE)
+			/* Read ahead not supported by this FSAL. */
+			if (cb_rc >= DIR_READAHEAD)
 				goto closedir;
 
 		} else if (rc == 0) {
@@ -1929,11 +1930,11 @@ fsal_status_t ceph_setattr2(struct fsal_obj_handle *obj_hdl,
 	/* Mask of attributes to set */
 	uint32_t mask = 0;
 
-	if (attrib_set->valid_mask & ~settable_attributes) {
+	if (attrib_set->valid_mask & ~CEPH_SETTABLE_ATTRIBUTES) {
 		LogDebug(COMPONENT_FSAL,
 			 "bad mask %"PRIx64" not settable %"PRIx64,
 			 attrib_set->valid_mask,
-			 attrib_set->valid_mask & ~settable_attributes);
+			 attrib_set->valid_mask & ~CEPH_SETTABLE_ATTRIBUTES);
 		return fsalstat(ERR_FSAL_INVAL, 0);
 	}
 

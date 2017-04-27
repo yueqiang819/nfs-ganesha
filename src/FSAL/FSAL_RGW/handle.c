@@ -133,7 +133,7 @@ struct rgw_cb_arg {
 	attrmask_t attrmask;
 };
 
-static bool rgw_cb(const char *name, void *arg, uint64_t offset)
+static bool rgw_cb(const char *name, void *arg, uint64_t offset, uint32_t flags)
 {
 	struct rgw_cb_arg *rgw_cb_arg = arg;
 	struct fsal_obj_handle *obj;
@@ -143,20 +143,21 @@ static bool rgw_cb(const char *name, void *arg, uint64_t offset)
 
 	fsal_prepare_attrs(&attrs, rgw_cb_arg->attrmask);
 
+	/* rgw_lookup now accepts type hints */
 	status = lookup_int(rgw_cb_arg->dir_hdl, name, &obj, &attrs,
-			RGW_LOOKUP_FLAG_RCB);
+			RGW_LOOKUP_FLAG_RCB|
+			(flags & (RGW_LOOKUP_FLAG_DIR|RGW_LOOKUP_FLAG_FILE)));
 	if (FSAL_IS_ERROR(status))
 		return false;
 
 	/** @todo FSF - when rgw gains mark capability, need to change this
 	 *              code...
 	 */
-	cb_rc = rgw_cb_arg->cb(name, obj, &attrs, rgw_cb_arg->fsal_arg, offset,
-			       NULL);
+	cb_rc = rgw_cb_arg->cb(name, obj, &attrs, rgw_cb_arg->fsal_arg, offset);
 
 	fsal_release_attrs(&attrs);
 
-	return cb_rc <= DIR_TERMINATE;
+	return cb_rc <= DIR_READAHEAD;
 }
 
 /**
@@ -195,15 +196,10 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 	LogFullDebug(COMPONENT_FSAL,
 		"%s enter dir_hdl %p", __func__, dir_hdl);
 
-	/* MDCACHE assumes we will reach eod, contrary to what the readdir
-	 * fsal op signature implies */
 	rc = 0;
 	*eof = false;
-	while ((rc == 0) &&
-		(!*eof)) {
-		rc = rgw_readdir(export->rgw_fs, dir->rgw_fh, &r_whence, rgw_cb,
-				&rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
-	}
+	rc = rgw_readdir(export->rgw_fs, dir->rgw_fh, &r_whence, rgw_cb,
+			&rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
 	if (rc < 0)
 		return rgw2fsal_error(rc);
 
@@ -418,11 +414,11 @@ fsal_status_t rgw_fsal_setattr2(struct fsal_obj_handle *obj_hdl,
 	LogFullDebug(COMPONENT_FSAL,
 		"%s enter obj_hdl %p state %p", __func__, obj_hdl, state);
 
-	if (attrib_set->valid_mask & ~rgw_settable_attributes) {
+	if (attrib_set->valid_mask & ~RGW_SETTABLE_ATTRIBUTES) {
 		LogDebug(COMPONENT_FSAL,
 			"bad mask %"PRIx64" not settable %"PRIx64,
 			attrib_set->valid_mask,
-			attrib_set->valid_mask & ~rgw_settable_attributes);
+			attrib_set->valid_mask & ~RGW_SETTABLE_ATTRIBUTES);
 		return fsalstat(ERR_FSAL_INVAL, 0);
 	}
 

@@ -724,7 +724,7 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 	 * the requested sequence or dirent sequence is exhausted */
 	*eod_met = false;
 
-	for (; cb_result <= DIR_CONTINUE_MARK && dirent_node != NULL;
+	for (; cb_result < DIR_TERMINATE && dirent_node != NULL;
 	     dirent_node = avltree_next(dirent_node)) {
 		struct attrlist attrs;
 		mdcache_entry_t *entry = NULL;
@@ -765,8 +765,12 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 			goto unlock_dir;
 		}
 
+#ifdef USE_LTTNG
+	tracepoint(mdcache, mdc_readdir,
+		   __func__, __LINE__, entry, entry->lru.refcnt);
+#endif
 		cb_result = cb(dirent->name, &entry->obj_handle, &attrs,
-			       dir_state, dirent->hk.k, NULL);
+			       dir_state, dirent->hk.k);
 
 		fsal_release_attrs(&attrs);
 

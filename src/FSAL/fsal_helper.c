@@ -1281,27 +1281,15 @@ populate_dirent(const char *name,
 		struct fsal_obj_handle *obj,
 		struct attrlist *attrs,
 		void *dir_state,
-		fsal_cookie_t cookie,
-		fsal_cookie_t *ret_cookie)
+		fsal_cookie_t cookie)
 {
 	struct fsal_populate_cb_state *state =
 	    (struct fsal_populate_cb_state *)dir_state;
 	fsal_status_t status = {0, 0};
 	enum fsal_dir_result retval;
 
-	if (ret_cookie != NULL) {
-		/* Caller cares about cookie marks, so we will need to
-		 * indicate continue but mark this entry.
-		 */
-		retval = DIR_CONTINUE_MARK;
-	} else {
-		/* Caller doesn't care about marks, so we will just
-		 * continue.
-		 */
-		retval = DIR_CONTINUE;
-	}
+	retval = DIR_CONTINUE;
 	state->cb_parms.name = name;
-
 
 	status.major = state->cb(&state->cb_parms, obj, attrs, attrs->fileid,
 				 cookie, state->cb_state);
@@ -1340,6 +1328,7 @@ populate_dirent(const char *name,
 				state->cb_state = CB_PROBLEM;
 				(void) state->cb(&state->cb_parms, NULL, NULL,
 						 0, cookie, state->cb_state);
+				/* Protocol layers NEVER do readahead. */
 				retval = DIR_TERMINATE;
 				goto out;
 			}
@@ -1350,6 +1339,7 @@ populate_dirent(const char *name,
 			state->cb_state = CB_PROBLEM;
 			(void) state->cb(&state->cb_parms, NULL, NULL, 0,
 					 cookie, state->cb_state);
+			/* Protocol layers NEVER do readahead. */
 			retval = DIR_TERMINATE;
 			goto out;
 		}
@@ -1389,6 +1379,7 @@ populate_dirent(const char *name,
 	}
 
 	if (!state->cb_parms.in_result) {
+		/* Protocol layers NEVER do readahead. */
 		retval = DIR_TERMINATE;
 		goto out;
 	}
@@ -1396,20 +1387,6 @@ populate_dirent(const char *name,
 	(*state->cb_nfound)++;
 
 out:
-
-	if (retval == DIR_CONTINUE_MARK) {
-		/* Caller cares about cookies, we need to return the last cookie
-		 * and then save this cookie so we can return it next time.
-		 */
-		*ret_cookie = state->last_cookie;
-		state->last_cookie = cookie;
-	}
-
-	/* NOTE: If the caller cares about cookies, and we did not consume the
-	 *       this entry, then returning DIR_TERMINATE as already set is
-	 *       appropriate, we will have marked the previous entrie's cookie
-	 *       and DIR_TERMINATE will indicate NOT to mark this cookie.
-	 */
 
 	/* Put the ref on obj that readdir took */
 	obj->obj_ops.put_ref(obj);

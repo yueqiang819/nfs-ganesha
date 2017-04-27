@@ -31,19 +31,14 @@
 #include "FSAL/fsal_commonlib.h"
 #include <glusterfs/api/glfs.h>
 #include <glusterfs/api/glfs-handles.h>
+#include "nfs_exports.h"
 
 #define GLUSTER_VOLNAME_KEY  "volume"
 #define GLUSTER_HOSTNAME_KEY "hostname"
 #define GLUSTER_VOLPATH_KEY  "volpath"
 
 /* defined the set of attributes supported with POSIX */
-#define GLUSTERFS_SUPPORTED_ATTRIBUTES (	 \
-ATTR_TYPE     | ATTR_SIZE     |		  \
-ATTR_FSID     | ATTR_FILEID   |		  \
-ATTR_MODE     | ATTR_NUMLINKS | ATTR_OWNER     | \
-ATTR_GROUP    | ATTR_ATIME    | ATTR_RAWDEV    | \
-ATTR_CTIME    | ATTR_MTIME    | ATTR_SPACEUSED | \
-ATTR_CHGTIME  | ATTR_ACL)
+#define GLUSTERFS_SUPPORTED_ATTRIBUTES (ATTRS_POSIX | ATTR_ACL)
 
 /**
  * The attributes this FSAL can set.
@@ -83,7 +78,7 @@ ATTR_ACL)
 		GLAPI_UUID_LENGTH)
 
 /* Flags to determine if ACLs are supported */
-#define NFSv4_ACL_SUPPORT (glfs_export->acl_enable)
+#define NFSv4_ACL_SUPPORT (!op_ctx_export_has_option(EXPORT_OPTION_DISABLE_ACL))
 
 /* define flags for attr_valid */
 #define XATTR_STAT      (1 << 0) /* 01 */
@@ -151,7 +146,6 @@ struct glusterfs_export {
 	uid_t saveduid;
 	gid_t savedgid;
 	struct fsal_export export;
-	bool acl_enable;
 	bool pnfs_ds_enabled;
 	bool pnfs_mds_enabled;
 };

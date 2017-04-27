@@ -616,6 +616,9 @@ static fattr_xdr_result encode_fsid(XDR *xdr, struct xdr_attrs_args *args)
 		fsid.major = args->fsid.major;
 		fsid.minor = args->fsid.minor;
 	}
+	LogDebug(COMPONENT_NFS_V4,
+		 "fsid.major = %"PRIu64", fsid.minor = %"PRIu64,
+		 fsid.major, fsid.minor);
 
 	if (!xdr_u_int64_t(xdr, &fsid.major))
 		return FATTR_XDR_FAILED;
@@ -1203,6 +1206,87 @@ static fattr_xdr_result decode_files_total(XDR *xdr,
 }
 
 /*
+ * allocate a dynamic pathname4 structure out of a filesystem path
+ */
+
+void nfs4_pathname4_alloc(pathname4 *pathname4, char *path)
+{
+	char *path_sav, *token, *path_work;
+	int i = 0;
+
+	if (path == NULL) {
+		pathname4->pathname4_val = gsh_malloc(sizeof(component4));
+		pathname4->pathname4_len = 1;
+		pathname4->pathname4_val->utf8string_val =
+			gsh_calloc(MAXPATHLEN, sizeof(char));
+		pathname4->pathname4_val->utf8string_len = MAXPATHLEN;
+	} else {
+		path_sav = gsh_strdup(path);
+		/* count tokens */
+		path_work = path_sav;
+		while ((token = strsep(&path_work, "/")) != NULL) {
+			if (strlen(token) > 0) {
+				i++;
+			}
+		}
+		LogDebug(COMPONENT_NFSPROTO, "%s has %d tokens", path, i);
+		/* reset content of path_sav */
+		strcpy(path_sav, path);
+		path_work = path_sav;
+
+		/* fill component4 */
+		pathname4->pathname4_val = gsh_malloc(i * sizeof(component4));
+		i = 0;
+		while ((token = strsep(&path_work, "/")) != NULL) {
+			if (strlen(token) > 0) {
+				LogDebug(COMPONENT_NFSPROTO,
+					 "token %d is %s", i, token);
+				pathname4->pathname4_val[i].utf8string_val =
+					gsh_strdup(token);
+				pathname4->pathname4_val[i].utf8string_len =
+					strlen(token);
+				i++;
+			}
+		}
+		pathname4->pathname4_len = i;
+		gsh_free(path_sav);
+	}
+}
+
+/*
+ * free dynamic pathname4 structure
+ */
+
+void nfs4_pathname4_free(pathname4 *pathname4)
+{
+	int i;
+
+	if (pathname4 == NULL)
+		return;
+
+	i = pathname4->pathname4_len;
+	LogFullDebug(COMPONENT_NFSPROTO,
+		     "number of pathname components to free: %d", i);
+
+	if (pathname4->pathname4_val == NULL)
+		return;
+
+	while (i-- > 0) {
+		if (pathname4->pathname4_val[i].utf8string_val != NULL) {
+			LogFullDebug(COMPONENT_NFSPROTO,
+				     "freeing component %d: %s",
+				     i+1,
+				     pathname4->pathname4_val[i].
+				     utf8string_val);
+			gsh_free(pathname4->pathname4_val[i].utf8string_val);
+			pathname4->pathname4_val[i].utf8string_val = NULL;
+		}
+	}
+	gsh_free(pathname4->pathname4_val);
+	pathname4->pathname4_val = NULL;
+}
+
+/*
  * FATTR4_FS_LOCATIONS
  */
 
@@ -1212,11 +1296,7 @@ static fattr_xdr_result encode_fs_locations(XDR *xdr,
 	fsal_status_t st;
 	fs_locations4 fs_locs;
 	fs_location4 fs_loc;
-	component4 fs_path;
-	component4 fs_root;
 	component4 fs_server;
-	char root[MAXPATHLEN];
-	char path[MAXPATHLEN];
 	char server[MAXHOSTNAMELEN];
 
 	if (args->data == NULL || args->data->current_obj == NULL)
@@ -1225,18 +1305,12 @@ static fattr_xdr_result encode_fs_locations(XDR *xdr,
 	if (args->data->current_obj->type != DIRECTORY)
 		return FATTR_XDR_NOOP;
 
-	fs_root.utf8string_len = sizeof(root);
-	fs_root.utf8string_val = root;
-	fs_path.utf8string_len = sizeof(path);
-	fs_path.utf8string_val = path;
-	fs_locs.fs_root.pathname4_len = 1;
-	fs_locs.fs_root.pathname4_val = &fs_path;
+	nfs4_pathname4_alloc(&fs_locs.fs_root, NULL);
 	fs_server.utf8string_len = sizeof(server);
 	fs_server.utf8string_val = server;
 	fs_loc.server.server_len = 1;
 	fs_loc.server.server_val = &fs_server;
-	fs_loc.rootpath.pathname4_len = 1;
-	fs_loc.rootpath.pathname4_val = &fs_root;
+	nfs4_pathname4_alloc(&fs_loc.rootpath, NULL);
 	fs_locs.locations.locations_len = 1;
 	fs_locs.locations.locations_val = &fs_loc;
 
@@ -1249,16 +1323,37 @@ static fattr_xdr_result encode_fs_locations(XDR *xdr,
 					args->data->current_obj,
 					&fs_locs);
 	if (FSAL_IS_ERROR(st)) {
-		strcpy(root, "not_supported");
-		strcpy(path, "not_supported");
+		strcpy(fs_locs.fs_root.pathname4_val->utf8string_val,
+		       "not_supported");
+		strcpy(fs_loc.rootpath.pathname4_val->utf8string_val,
+		       "not_supported");
 		strcpy(server, "not_supported");
-		fs_root.utf8string_len = strlen(root);
-		fs_path.utf8string_len = strlen(path);
+		fs_locs.fs_root.pathname4_val->utf8string_len =
+			strlen(fs_locs.fs_root.pathname4_val->utf8string_val);
+		fs_loc.rootpath.pathname4_val->utf8string_len =
+			strlen(fs_loc.rootpath.pathname4_val->utf8string_val);
 		fs_server.utf8string_len = strlen(server);
+
+		LogEvent(COMPONENT_NFSPROTO,
+			 "encode_fs_locations obj_ops.fs_locations failed %s, %s, %s",
+			 fs_locs.fs_root.pathname4_val->utf8string_val,
+			 fs_loc.rootpath.pathname4_val->utf8string_val,
+			 server);
+
 	}
 
-	if (!xdr_fs_locations4(xdr, &fs_locs))
+	if (!xdr_fs_locations4(xdr, &fs_locs)) {
+		LogEvent(COMPONENT_NFSPROTO,
+			 "encode_fs_locations xdr_fs_locations failed %s, %s, %s",
+			 fs_locs.fs_root.pathname4_val->utf8string_val,
+			 fs_loc.rootpath.pathname4_val->utf8string_val,
+			 server);
+
 		return FATTR_XDR_FAILED;
+	}
+
+	nfs4_pathname4_free(&fs_locs.fs_root);
+	nfs4_pathname4_free(&fs_loc.rootpath);
 
 	return FATTR_XDR_SUCCESS;
 }
@@ -1545,6 +1640,11 @@ static fattr_xdr_result decode_owner(XDR *xdr, struct xdr_attrs_args *args)
 	if (!inline_xdr_u_int(xdr, &len))
 		return FATTR_XDR_FAILED;
 
+	if (len == 0) {
+		args->nfs_status = NFS4ERR_INVAL;
+		return FATTR_XDR_FAILED;
+	}
+
 	pos = xdr_getpos(xdr);
 	newpos = pos + len;
 	if (len % 4 != 0)
@@ -1560,6 +1660,7 @@ static fattr_xdr_result decode_owner(XDR *xdr, struct xdr_attrs_args *args)
 	}
 
 	if (!name2uid(&ownerdesc, &uid, get_anonymous_uid())) {
+		args->nfs_status = NFS4ERR_BADOWNER;
 		return FATTR_BADOWNER;
 	}
 
@@ -1588,6 +1689,11 @@ static fattr_xdr_result decode_group(XDR *xdr, struct xdr_attrs_args *args)
 	if (!inline_xdr_u_int(xdr, &len))
 		return FATTR_XDR_FAILED;
 
+	if (len == 0) {
+		args->nfs_status = NFS4ERR_INVAL;
+		return FATTR_XDR_FAILED;
+	}
+
 	pos = xdr_getpos(xdr);
 	newpos = pos + len;
 	if (len % 4 != 0)
@@ -1602,8 +1708,10 @@ static fattr_xdr_result decode_group(XDR *xdr, struct xdr_attrs_args *args)
 		return FATTR_XDR_FAILED;
 	}
 
-	if (!name2gid(&groupdesc, &gid, get_anonymous_gid()))
+	if (!name2gid(&groupdesc, &gid, get_anonymous_gid())) {
+		args->nfs_status = NFS4ERR_BADOWNER;
 		return FATTR_BADOWNER;
+	}
 
 	xdr_setpos(xdr, newpos);
 	args->attrs->group = gid;

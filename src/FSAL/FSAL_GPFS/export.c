@@ -500,8 +500,8 @@ int open_root_fd(struct gpfs_filesystem *gpfs_fs)
 	}
 
 	status = fsal_internal_get_handle_at(gpfs_fs->root_fd,
-					     gpfs_fs->fs->path, &fh, 0,
-					     &gpfs_fs->root_fd);
+					     gpfs_fs->fs->path, &fh,
+					     gpfs_fs->root_fd);
 
 	if (FSAL_IS_ERROR(status)) {
 		retval = status.minor;
@@ -515,13 +515,13 @@ int open_root_fd(struct gpfs_filesystem *gpfs_fs)
 
 	retval = re_index_fs_fsid(gpfs_fs->fs, GPFS_FSID_TYPE, &fsid);
 
-	if (retval >= 0)
-		return retval;
+	if (retval == 0)
+		return 0;
 
 	LogCrit(COMPONENT_FSAL,
-		"Could not re-index GPFS file system fsid for %s",
-		gpfs_fs->fs->path);
-
+		"Could not re-index GPFS file system fsid for %s, error:%d",
+		gpfs_fs->fs->path, retval);
+	assert(retval < 0);
 	retval = -retval;
 
 errout:

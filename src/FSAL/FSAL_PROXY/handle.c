@@ -1652,11 +1652,12 @@ static fsal_status_t pxy_do_readdir(struct pxy_obj_handle *ph,
 		if (FSAL_IS_ERROR(st))
 			break;
 
-		cb_rc = cb(name, handle, &attrs, cbarg, e4->cookie, NULL);
+		cb_rc = cb(name, handle, &attrs, cbarg, e4->cookie);
 
 		fsal_release_attrs(&attrs);
 
-		if (cb_rc >= DIR_TERMINATE)
+		/* Read ahead not supported by this FSAL. */
+		if (cb_rc >= DIR_READAHEAD)
 			break;
 	}
 	xdr_free((xdrproc_t) xdr_readdirres, resoparray);
@@ -2313,10 +2314,9 @@ static fsal_status_t pxy_open2(struct fsal_obj_handle *obj_hdl,
 		/* nfs call*/
 		rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds, opcnt,
 				    argoparray, resoparray);
-		if (rc != NFS4_OK) {
-			nfs4_Fattr_Free(&inattrs);
+		nfs4_Fattr_Free(&inattrs);
+		if (rc != NFS4_OK)
 			return nfsstat4_to_fsal(rc);
-		}
 
 		/* See if a OPEN_CONFIRM is required */
 		if (opok->rflags & OPEN4_RESULT_CONFIRM) {
@@ -2334,6 +2334,8 @@ static fsal_status_t pxy_open2(struct fsal_obj_handle *obj_hdl,
 		st = pxy_do_close(op_ctx->creds, &fhok->object,
 				  ++open_owner_seqid, &opok->stateid,
 				  op_ctx->fsal_export);
+		if (FSAL_IS_ERROR(st))
+			return st;
 	} else if (attrs_out || openflags & FSAL_O_TRUNC) {
 	/* open by handle */
 	/* we have nothing to do except getattr or truncate */
@@ -2360,14 +2362,10 @@ static fsal_status_t pxy_open2(struct fsal_obj_handle *obj_hdl,
 		/* nfs call*/
 		rc = pxy_nfsv4_call(op_ctx->fsal_export, op_ctx->creds, opcnt,
 				    argoparray, resoparray);
-		if (rc != NFS4_OK) {
-			nfs4_Fattr_Free(&inattrs);
+		nfs4_Fattr_Free(&inattrs);
+		if (rc != NFS4_OK)
 			return nfsstat4_to_fsal(rc);
-		}
 	}
-
-	/* cleaning inattrs */
-	nfs4_Fattr_Free(&inattrs);
 
 	/* create a new handle if asked and attrs_out by the way */
 	if (new_obj) {

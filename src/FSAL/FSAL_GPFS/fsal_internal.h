@@ -78,14 +78,9 @@ struct gpfs_state_fd {
 };
 
 /* defined the set of attributes supported with POSIX */
-#define GPFS_SUPPORTED_ATTRIBUTES (                              \
-		ATTR_TYPE     | ATTR_SIZE     |                  \
-		ATTR_FSID     | ATTR_FILEID   |                  \
-		ATTR_MODE     | ATTR_NUMLINKS | ATTR_OWNER     | \
-		ATTR_GROUP    | ATTR_ATIME    | ATTR_RAWDEV    | \
-		ATTR_CTIME    | ATTR_MTIME    | ATTR_SPACEUSED | \
-		ATTR_CHGTIME | ATTR_ACL | ATTR4_SPACE_RESERVED | \
-		ATTR4_FS_LOCATIONS | ATTR4_XATTR)
+#define GPFS_SUPPORTED_ATTRIBUTES ((const attrmask_t) (         \
+		ATTRS_POSIX | ATTR_ACL | ATTR4_SPACE_RESERVED | \
+		ATTR4_FS_LOCATIONS | ATTR4_XATTR))
 
 #define GPFS_MAX_FH_SIZE OPENHANDLE_HANDLE_LEN
 
@@ -122,7 +117,7 @@ int fsal_internal_version(void);
 fsal_status_t fsal_internal_get_handle_at(int dfd,
 				const char *p_fsalname,
 				struct gpfs_file_handle *p_handle,
-				int expfd, int *expfdP);
+				int expfd);
 
 fsal_status_t gpfsfsal_xstat_2_fsal_attributes(gpfsfsal_xstat_t *gpfs_buf,
 		struct attrlist *fsal_attr, gpfs_acl_t *acl_buf, bool use_acl);
@@ -148,7 +143,7 @@ fsal_status_t fsal_readlink_by_handle(int dirfd,
  * Get the handle for a path (posix or fid path)
  */
 fsal_status_t fsal_internal_fd2handle(int fd,
-				struct gpfs_file_handle *p_handle, int *expfdP);
+				struct gpfs_file_handle *p_handle);
 
 fsal_status_t fsal_internal_link_at(int srcfd, int dfd, char *name);
 

@@ -198,7 +198,9 @@ static void *sigmgr_thread(void *UnusedArg)
 			LogEvent(COMPONENT_MAIN,
 				 "SIGHUP_HANDLER: Received SIGHUP.... initiating export list reload");
 			reread_config();
+#ifdef _HAVE_GSSAPI
 			svcauth_gss_release_cred();
+#endif /* _HAVE_GSSAPI */
 		}
 	}
 	LogDebug(COMPONENT_THREAD, "sigmgr thread exiting");
@@ -647,7 +649,7 @@ static void nfs_Init(const nfs_start_info_t *p_start_info)
 
 	/* RPC Initialisation - exits on failure */
 	nfs_Init_svc();
-	LogInfo(COMPONENT_INIT, "RPC ressources successfully initialized");
+	LogInfo(COMPONENT_INIT, "RPC resources successfully initialized");
 
 	/* Admin initialisation */
 	nfs_Init_admin_thread();

@@ -263,7 +263,7 @@ int32_t inc_client_id_ref(nfs_client_id_t *clientid)
 	int32_t cid_refcount = atomic_inc_int32_t(&clientid->cid_refcount);
 
 	if (isFullDebug(COMPONENT_CLIENTID)) {
-		char str[LOG_BUFF_LEN];
+		char str[LOG_BUFF_LEN] = "\0";
 		struct display_buffer dspbuf = {sizeof(str), str, str};
 
 		display_client_id_rec(&dspbuf, clientid);
@@ -314,17 +314,18 @@ bool client_id_has_state(nfs_client_id_t *clientid)
 
 void free_client_id(nfs_client_id_t *clientid)
 {
-	struct svc_rpc_gss_data *gd;
-
 	assert(atomic_fetch_int32_t(&clientid->cid_refcount) == 0);
 
 	if (clientid->cid_client_record != NULL)
 		dec_client_record_ref(clientid->cid_client_record);
 
+#ifdef _HAVE_GSSAPI
 	if (clientid->cid_credential.flavor == RPCSEC_GSS) {
+		struct svc_rpc_gss_data *gd;
 		gd = clientid->cid_credential.auth_union.auth_gss.gd;
 		unref_svc_rpc_gss_data(gd, 0);
 	}
+#endif /* _HAVE_GSSAPI */
 	/* For NFSv4.1 clientids, destroy all associated sessions */
 	if (clientid->cid_minorversion > 0) {
 		struct glist_head *glist = NULL;
@@ -361,7 +362,7 @@ void free_client_id(nfs_client_id_t *clientid)
  */
 int32_t dec_client_id_ref(nfs_client_id_t *clientid)
 {
-	char str[LOG_BUFF_LEN];
+	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
 	int32_t cid_refcount;
 
@@ -529,7 +530,6 @@ nfs_client_id_t *create_client_id(clientid4 clientid,
 {
 	nfs_client_id_t *client_rec = pool_alloc(client_id_pool);
 	state_owner_t *owner;
-	struct svc_rpc_gss_data *gd;
 
 	PTHREAD_MUTEX_init(&client_rec->cid_mutex, NULL);
 
@@ -557,10 +557,13 @@ nfs_client_id_t *create_client_id(clientid4 clientid,
 	 * using it later, so we should make sure that this doesn't go
 	 * away until we destroy this nfs clientid.
 	 */
+#ifdef _HAVE_GSSAPI
 	if (credential->flavor == RPCSEC_GSS) {
+		struct svc_rpc_gss_data *gd;
 		gd = credential->auth_union.auth_gss.gd;
 		(void)atomic_inc_uint32_t(&gd->refcnt);
 	}
+#endif /* _HAVE_GSSAPI */
 
 	client_rec->cid_minorversion = minorversion;
 	client_rec->gsh_client = op_ctx->client;
@@ -763,7 +766,7 @@ clientid_status_t nfs_client_id_confirm(nfs_client_id_t *clientid,
 
 	if (rc != HASHTABLE_SUCCESS) {
 		if (isDebug(COMPONENT_CLIENTID)) {
-			char str[LOG_BUFF_LEN];
+			char str[LOG_BUFF_LEN] = "\0";
 			struct display_buffer dspbuf = {sizeof(str), str, str};
 
 			display_client_id_rec(&dspbuf, clientid);
@@ -784,7 +787,7 @@ clientid_status_t nfs_client_id_confirm(nfs_client_id_t *clientid,
 
 	if (rc != HASHTABLE_SUCCESS) {
 		if (isDebug(COMPONENT_CLIENTID)) {
-			char str[LOG_BUFF_LEN];
+			char str[LOG_BUFF_LEN] = "\0";
 			struct display_buffer dspbuf = {sizeof(str), str, str};
 
 			display_client_id_rec(&dspbuf, clientid);
@@ -875,7 +878,7 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 	struct gsh_buffdesc old_value;
 	hash_table_t *ht_expire;
 	nfs_client_record_t *record;
-	char str[LOG_BUFF_LEN];
+	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
 	bool str_valid = false;
 	struct root_op_context root_op_context;
@@ -992,7 +995,7 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 		state_nfs4_owner_unlock_all(owner);
 
 		if (isFullDebug(COMPONENT_CLIENTID)) {
-			char str[LOG_BUFF_LEN];
+			char str[LOG_BUFF_LEN] = "\0";
 			struct display_buffer dspbuf = {sizeof(str), str, str};
 			int32_t refcount =
 			    atomic_fetch_int32_t(&owner->so_refcount);
@@ -1049,7 +1052,7 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 		release_openstate(owner);
 
 		if (isFullDebug(COMPONENT_CLIENTID)) {
-			char str[LOG_BUFF_LEN];
+			char str[LOG_BUFF_LEN] = "\0";
 			struct display_buffer dspbuf = {sizeof(str), str, str};
 			int32_t refcount =
 			    atomic_fetch_int32_t(&owner->so_refcount);
@@ -1399,7 +1402,7 @@ int32_t inc_client_record_ref(nfs_client_record_t *record)
 	int32_t rec_refcnt = atomic_inc_int32_t(&record->cr_refcount);
 
 	if (isFullDebug(COMPONENT_CLIENTID)) {
-		char str[LOG_BUFF_LEN];
+		char str[LOG_BUFF_LEN] = "\0";
 		struct display_buffer dspbuf = {sizeof(str), str, str};
 
 		display_client_record(&dspbuf, record);
@@ -1430,7 +1433,7 @@ void free_client_record(nfs_client_record_t *record)
 
 int32_t dec_client_record_ref(nfs_client_record_t *record)
 {
-	char str[LOG_BUFF_LEN];
+	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
 	struct hash_latch latch;
 	hash_error_t rc;

@@ -1,7 +1,7 @@
 /*
  * vim:noexpandtab:shiftwidth=8:tabstop=8:
  *
- * Copyright 2015-2016 Red Hat, Inc. and/or its affiliates.
+ * Copyright 2015-2017 Red Hat, Inc. and/or its affiliates.
  * Author: Daniel Gryniewicz <dang@redhat.com>
  *
  * This program is free software; you can redistribute it and/or
@@ -110,7 +110,6 @@ enum lru_q_id {
 	LRU_ENTRY_NONE = 0, /* entry not queued */
 	LRU_ENTRY_L1,
 	LRU_ENTRY_L2,
-	LRU_ENTRY_NOSCAN,
 	LRU_ENTRY_CLEANUP
 };
 
@@ -124,7 +123,6 @@ typedef struct mdcache_lru__ {
 	enum lru_q_id qid;	/*< Queue identifier */
 	int32_t refcnt;		/*< Reference count.  This is signed to make
 				   mistakes easy to see. */
-	int32_t noscan_refcnt;	/*< Count of times marked noscan */
 	uint32_t flags;		/*< Status flags; MUST use atomic ops */
 	uint32_t lane;		/*< The lane in which an entry currently
 				 *< resides, so we can lock the deque and
@@ -309,8 +307,6 @@ struct dir_chunk {
 	struct glist_head dirents;
 	/** Directory this chunk belongs to */
 	struct mdcache_fsal_obj_handle *parent;
-	/** AVL tree for sorted dirents */
-	struct avltree dirents_avl;
 	/** The previous chunk, this pointer is only de-referenced during
 	 *  chunk population (where the content_lock prevents the previous
 	 *  chunk from going invalid), or used to double check but not
@@ -334,7 +330,6 @@ struct dir_chunk {
 
 #define DIR_ENTRY_FLAG_NONE     0x0000
 #define DIR_ENTRY_FLAG_DELETED  0x0001
-#define DIR_ENTRY_COOKIE_MARKED 0x0002
 #define DIR_ENTRY_SORTED        0x0004
 
 typedef struct mdcache_dir_entry__ {
@@ -482,6 +477,12 @@ void _mdcache_kill_entry(mdcache_entry_t *entry,
 	_mdcache_kill_entry(entry, \
 			    (char *) __FILE__, __LINE__, (char *) __func__)
 
+fsal_status_t
+mdc_get_parent_handle(struct mdcache_fsal_export *export,
+		      mdcache_entry_t *entry,
+		      struct fsal_obj_handle *sub_parent);
+
+
 
 extern struct config_block mdcache_param_blk;
 
@@ -561,9 +562,17 @@ mdcache_key_dup(mdcache_key_t *tgt,
 static inline void
 mdc_dir_add_parent(mdcache_entry_t *entry, mdcache_entry_t *mdc_parent)
 {
-	if (entry->fsobj.fsdir.parent.kv.len == 0)
+	if (entry->fsobj.fsdir.parent.kv.len == 0) {
+		/* The parent key must be a full wire handle so that
+		 * create_handle() works in all cases.
+		 */
+		mdc_get_parent_handle(mdc_cur_export(), entry,
+				      mdc_parent->sub_handle);
+#if 0
 		mdcache_key_dup(&entry->fsobj.fsdir.parent,
 				&mdc_parent->fh_hk.key);
+#endif
+	}
 }
 
 /**
@@ -772,7 +781,7 @@ _mdc_unreachable(mdcache_entry_t *entry,
 							entry->obj_handle.type),
 					 entry,
 					 mdc_has_state(entry)
-						? "has" : "does't have");
+						? "has" : "doesn't have");
 	}
 
 	if (!mdc_has_state(entry)) {

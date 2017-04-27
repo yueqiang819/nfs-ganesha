@@ -339,6 +339,9 @@ typedef struct fsal_acl_data__ {
  */
 typedef uint64_t attrmask_t;
 
+/** For stackable FSALs that just pass through dealings with attributes */
+#define ALL_ATTRIBUTES UINT64_MAX
+
 /**
  * Attribute masks.
  */
@@ -416,6 +419,9 @@ typedef uint64_t attrmask_t;
 #define ATTRS_SET_TIME (ATTR_ATIME | ATTR_MTIME | \
 			ATTR_ATIME_SERVER | ATTR_MTIME_SERVER)
 
+/** Define the set of attributes contained or derrived from struct stat that
+ *  are supplied by posix2fsal_attributes.
+ */
 #define ATTRS_POSIX (ATTR_TYPE | ATTR_SIZE | ATTR_FSID | ATTR_FILEID |     \
 		     ATTR_MODE | ATTR_NUMLINKS | ATTR_OWNER | ATTR_GROUP | \
 		     ATTR_ATIME | ATTR_CTIME | ATTR_MTIME | ATTR_CHGTIME | \
@@ -635,6 +641,7 @@ typedef enum enum_fsal_fsinfo_options {
 	fso_link_supports_permission_checks,
 	fso_rename_changes_key,
 	fso_compute_readdir_cookie,
+	fso_whence_is_name,
 } fsal_fsinfo_options_t;
 
 /* The largest maxread and maxwrite value */
@@ -687,6 +694,7 @@ typedef struct fsal_staticfsinfo_t {
 	bool link_supports_permission_checks;
 	bool rename_changes_key;/*< Handle key is changed across rename */
 	bool compute_readdir_cookie;
+	bool whence_is_name;
 } fsal_staticfsinfo_t;
 
 /**

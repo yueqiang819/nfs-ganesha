@@ -231,8 +231,8 @@ static struct log_facility *default_facility;
 
 log_header_t max_headers = LH_COMPONENT;
 
-char const_log_str[LOG_BUFF_LEN];
-char date_time_fmt[MAX_TD_FMT_LEN];
+char const_log_str[LOG_BUFF_LEN] = "\0";
+char date_time_fmt[MAX_TD_FMT_LEN] = "\0";
 
 typedef struct loglev {
 	char *str;
@@ -1038,7 +1038,7 @@ int set_log_destination(const char *name, char *dest)
 	} else {
 		PTHREAD_RWLOCK_unlock(&log_rwlock);
 		LogCrit(COMPONENT_LOG,
-			 "Log facility %s destination is not changable",
+			 "Log facility %s destination is not changeable",
 			facility->lf_name);
 		return -EINVAL;
 	}
