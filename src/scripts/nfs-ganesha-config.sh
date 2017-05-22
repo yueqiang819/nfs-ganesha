@@ -3,11 +3,11 @@
 #
 # Extract configuration from /etc/sysconfig/ganesha and
 # copy or generate new environment variables to
-# /run/sysconfig/ganesha to be used by nfs-ganesha service
+# /run/sysconfig/nfs-ganesha to be used by nfs-ganesha service
 #
 
-CONFIGFILE=/etc/sysconfig/ganesha
-RUNCONFIG=/run/sysconfig/ganesha
+CONFIGFILE=/etc/sysconfig/nfs-ganesha
+RUNCONFIG=/run/sysconfig/nfs-ganesha
 if [ ! -e $(command dirname ${CONFIGFILE} 2>/dev/null) ]; then
 	# Debian/Ubuntu
 	CONFIGFILE=/etc/ganesha/nfs-ganesha

@@ -34,7 +34,7 @@ LOCK_FILE=${LOCK_FILE:=/var/lock/subsys/${prog}}
 
 # Generate and read config values
 [ -x /usr/libexec/ganesha/nfs-ganesha-config.sh ] && /usr/libexec/ganesha/nfs-ganesha-config.sh
-[ -f /run/sysconfig/ganesha ] && . /run/sysconfig/ganesha
+[ -f /run/sysconfig/nfs-ganesha ] && . /run/sysconfig/nfs-ganesha
 
 [ -z "$NOFILE" ] && NOFILE=1048576
 
