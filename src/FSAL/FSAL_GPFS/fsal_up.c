@@ -40,7 +40,7 @@
 void *GPFSFSAL_UP_Thread(void *Arg)
 {
 	struct gpfs_filesystem *gpfs_fs = Arg;
-	const struct fsal_up_vector *event_func;
+	struct fsal_up_vector *event_func;
 	char thr_name[16];
 	int rc = 0;
 	struct pnfs_deviceid devid;
@@ -54,7 +54,7 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 	int retry = 0;
 	struct gsh_buffdesc key;
 	uint32_t expire_time_attr = 0;
-	uint32_t upflags = 0;
+	uint32_t upflags;
 	int errsv = 0;
 	fsal_status_t fsal_status = {0,};
 	struct req_op_context req_ctx = {0};
@@ -72,7 +72,10 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 	SetNameFunction(thr_name);
 
 	/* Set the FSAL UP functions that will be used to process events. */
-	event_func = gpfs_fs->up_ops;
+	event_func = (struct fsal_up_vector *)gpfs_fs->up_ops;
+
+	/* wait for upcall readiness */
+	up_ready_wait(event_func);
 
 	/* Set up op_ctx for this thread */
 	req_ctx.fsal_export = event_func->up_fsal_export;
@@ -330,17 +333,14 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 						FSAL_UP_INVALIDATE_CACHE);
 				} else {
 					/* buf may not have all attributes set.
-					 * Since posix2fsal_attributes() copies
-					 * all attributes and also sets
-					 * attr.mask, correct attr.mask with
-					 * valid upcall flags only before
-					 * passing the attr to update() which
-					 * actually updates the cache_inode
-					 * object attributes.
+					 * Since posix2fsal_attributes()
+					 * assumes all attributes being set, we
+					 * can't use it.
 					 */
-					posix2fsal_attributes(&buf, &attr);
 					/* Set the mask to what is changed */
 					attr.valid_mask = 0;
+					attr.acl = NULL;
+					upflags = 0;
 					if (flags & UP_SIZE)
 						attr.valid_mask |=
 						   ATTR_CHGTIME | ATTR_CHANGE |
@@ -374,14 +374,14 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 					attr.expire_time_attr =
 					    expire_time_attr;
 
+					posix2fsal_attributes(&buf, &attr);
 					fsal_status = event_func->
 					    update(event_func,
 						   &key, &attr, upflags);
 
 					if ((flags & UP_NLINK)
 					    && (attr.numlinks == 0)) {
-						upflags = fsal_up_nlink |
-							  fsal_up_close;
+						upflags = fsal_up_nlink;
 						attr.valid_mask = 0;
 						fsal_status = up_async_update
 						    (general_fridge,

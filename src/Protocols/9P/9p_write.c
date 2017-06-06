@@ -103,11 +103,22 @@ int _9p_write(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	/* Do the job */
 	size = *count;
 
-	if (pfid->specdata.xattr.xattr_content != NULL) {
-		memcpy(pfid->specdata.xattr.xattr_content + (*offset),
-		       databuffer, size);
-		pfid->specdata.xattr.xattr_offset += size;
-		pfid->specdata.xattr.xattr_write = true;
+	if (pfid->xattr != NULL) {
+		if (*offset > pfid->xattr->xattr_size)
+			return _9p_rerror(req9p, msgtag, EINVAL, plenout,
+					  preply);
+		if (pfid->xattr->xattr_write != _9P_XATTR_CAN_WRITE &&
+		    pfid->xattr->xattr_write != _9P_XATTR_DID_WRITE)
+			return _9p_rerror(req9p, msgtag, EINVAL, plenout,
+					  preply);
+
+		written_size = MIN(*count,
+				   pfid->xattr->xattr_size - *offset);
+
+		memcpy(pfid->xattr->xattr_content + *offset,
+		       databuffer, written_size);
+		pfid->xattr->xattr_offset += size;
+		pfid->xattr->xattr_write = _9P_XATTR_DID_WRITE;
 
 		/* ADD CODE TO DETECT GAP */
 #if 0
@@ -115,7 +126,7 @@ int _9p_write(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 		    pfid->pentry->ops->setextattr_value_by_id(
 			pfid->pentry,
 			&pfid->op_context,
-			pfid->specdata.xattr.xattr_id,
+			pfid->xattr->xattr_id,
 			xattrval, size + 1);
 
 		if (FSAL_IS_ERROR(fsal_status))
@@ -124,7 +135,7 @@ int _9p_write(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 					  preply);
 #endif
 
-		outcount = *count;
+		outcount = written_size;
 	} else {
 		if (pfid->pentry->fsal->m_ops.support_ex(pfid->pentry)) {
 			/* Call the new fsal_write */

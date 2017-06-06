@@ -97,13 +97,22 @@ int _9p_read(struct _9p_request_data *req9p, u32 *plenout, char *preply)
 	databuffer = _9p_getbuffertofill(cursor);
 
 	/* Do the job */
-	if (pfid->specdata.xattr.xattr_content != NULL) {
+	if (pfid->xattr != NULL) {
 		/* Copy the value cached during xattrwalk */
-		memcpy(databuffer, pfid->specdata.xattr.xattr_content + *offset,
-		       *count);
-		pfid->specdata.xattr.xattr_write = false;
+		if (*offset > pfid->xattr->xattr_size)
+			return _9p_rerror(req9p, msgtag, EINVAL, plenout,
+					  preply);
+		if (pfid->xattr->xattr_write != _9P_XATTR_READ_ONLY)
+			return _9p_rerror(req9p, msgtag, EINVAL, plenout,
+					  preply);
 
-		outcount = (u32) *count;
+		read_size = MIN(*count,
+				pfid->xattr->xattr_size - *offset);
+		memcpy(databuffer,
+		       pfid->xattr->xattr_content + *offset,
+		       read_size);
+
+		outcount = read_size;
 	} else {
 		if (pfid->pentry->fsal->m_ops.support_ex(pfid->pentry)) {
 			/* Call the new fsal_read */

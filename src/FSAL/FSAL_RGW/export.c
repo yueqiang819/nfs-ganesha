@@ -137,7 +137,7 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	*pub_handle = &handle->handle;
 
 	if (attrs_out != NULL) {
-		posix2fsal_attributes(&st, attrs_out);
+		posix2fsal_attributes_all(&st, attrs_out);
 	}
 
 	return status;
@@ -231,7 +231,7 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 	*pub_handle = &handle->handle;
 
 	if (attrs_out != NULL) {
-		posix2fsal_attributes(&st, attrs_out);
+		posix2fsal_attributes_all(&st, attrs_out);
 	}
 
 	return status;
@@ -504,5 +504,5 @@ void export_ops_init(struct export_ops *ops)
 	ops->fs_supported_attrs = fs_supported_attrs;
 	ops->fs_umask = fs_umask;
 	ops->fs_xattr_access_rights = fs_xattr_access_rights;
-	ops->alloc_state = alloc_state;
+	ops->alloc_state = rgw_alloc_state;
 }
