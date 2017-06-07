@@ -330,7 +330,7 @@ option(USE_TSAN "Enable GCC Thread-Sanitizer" OFF)
 option(USE_LTTNG "Enable LTTng tracing" OFF)
 
 # Build man page.
-option(USE_MAN_PAGE "Build MAN page" OFF) 
+option(USE_MAN_PAGE "Build MAN page" ON) 
 
 #
 # End build options
@@ -1307,6 +1307,12 @@ if (USE_SYSTEM_NTIRPC)
 else(USE_SYSTEM_NTIRPC)
   set(BCOND_NTIRPC "%bcond_with")
 endif(USE_SYSTEM_NTIRPC)
+ 
+if (USE_MAN_PAGE)
+  set(BCOND_MAN_PAGE "%bcond_without")
+else(USE_MAN_PAGE)
+  set(BCOND_MAN_PAGE "%bcond_with")
+endif(USE_MAN_PAGE)
 
 # Now create a useable specfile
 configure_file(
