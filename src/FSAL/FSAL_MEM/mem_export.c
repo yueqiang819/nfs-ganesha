@@ -43,7 +43,7 @@
 #include "fsal_convert.h"
 #include "FSAL/fsal_commonlib.h"
 #include "FSAL/fsal_config.h"
-#include "mem_methods.h"
+#include "mem_int.h"
 #include "nfs_exports.h"
 #include "export_mgr.h"
 
@@ -54,6 +54,9 @@
 #define bswap_64(x)     bswap64((x))
 #endif
 
+#ifdef USE_LTTNG
+#include "gsh_lttng/fsal_mem.h"
+#endif
 /* helpers to/from other MEM objects
  */
 
@@ -84,6 +87,8 @@ static void mem_release_export(struct fsal_export *exp_hdl)
 
 	fsal_detach_export(exp_hdl->fsal, &exp_hdl->exports);
 	free_export_ops(exp_hdl);
+
+	glist_del(&myself->export_entry);
 
 	if (myself->export_path != NULL)
 		gsh_free(myself->export_path);
@@ -264,8 +269,11 @@ static struct state_t *mem_alloc_state(struct fsal_export *exp_hdl,
 	struct state_t *state;
 
 	state = init_state(gsh_calloc(1, sizeof(struct state_t)
-				      + sizeof(struct mem_fd)),
+				      + sizeof(struct fsal_fd)),
 			   exp_hdl, state_type, related_state);
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_alloc_state, __func__, __LINE__, state);
+#endif
 	return state;
 }
 
@@ -318,6 +326,7 @@ fsal_status_t mem_create_export(struct fsal_module *fsal_hdl,
 		return fsalstat(posix2fsal_error(errno), errno);
 	}
 
+	glist_init(&myself->mfe_objs);
 	fsal_export_init(&myself->export);
 	mem_export_ops_init(&myself->export.exp_ops);
 
@@ -336,10 +345,14 @@ fsal_status_t mem_create_export(struct fsal_module *fsal_hdl,
 	}
 
 	myself->export.fsal = fsal_hdl;
+	myself->export.up_ops = up_ops;
 
 	/* Save the export path. */
 	myself->export_path = gsh_strdup(op_ctx->ctx_export->fullpath);
 	op_ctx->fsal_export = &myself->export;
+
+	/* Insert into exports list */
+	glist_add_tail(&MEM.mem_exports, &myself->export_entry);
 
 	LogDebug(COMPONENT_FSAL,
 		 "Created exp %p - %s",

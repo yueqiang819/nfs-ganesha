@@ -36,19 +36,14 @@
 #include <limits.h>
 #include <sys/types.h>
 #include "FSAL/fsal_init.h"
-#include "mem_methods.h"
+#include "mem_int.h"
 #include "../fsal_private.h"
 
 /* MEM FSAL module private storage
  */
 
 /* defined the set of attributes supported with POSIX */
-#define MEM_SUPPORTED_ATTRIBUTES (				\
-	ATTR_TYPE     | ATTR_SIZE     |				\
-	ATTR_FSID     | ATTR_FILEID   |				\
-	ATTR_MODE     | ATTR_NUMLINKS | ATTR_OWNER     |	\
-	ATTR_GROUP    | ATTR_ATIME    | ATTR_RAWDEV    |	\
-	ATTR_CTIME    | ATTR_MTIME    | ATTR_SPACEUSED | ATTR_CHGTIME)
+#define MEM_SUPPORTED_ATTRIBUTES (ATTRS_POSIX)
 
 /* my module private storage */
 
@@ -66,8 +61,8 @@ static struct fsal_staticfsinfo_t default_mem_info = {
 	.chown_restricted = true,
 	.case_insensitive = false,
 	.case_preserving = true,
-	.link_support = false,
-	.symlink_support = false,
+	.link_support = true,
+	.symlink_support = true,
 	.lock_support = true,
 	.lock_support_owner = true,
 	.lock_support_async_block = false,
@@ -89,6 +84,8 @@ static struct fsal_staticfsinfo_t default_mem_info = {
 static struct config_item mem_items[] = {
 	CONF_ITEM_UI32("Inode_Size", 0, 0x200000, 0,
 		       mem_fsal_module, inode_size),
+	CONF_ITEM_UI32("Up_Test_Interval", 0, UINT32_MAX, 0,
+		       mem_fsal_module, up_interval),
 	CONFIG_EOL
 };
 
@@ -119,9 +116,9 @@ static fsal_status_t mem_init_config(struct fsal_module *fsal_hdl,
 {
 	struct mem_fsal_module *mem_me =
 	    container_of(fsal_hdl, struct mem_fsal_module, fsal);
+	fsal_status_t status = {0, 0};
 
-	LogDebug(COMPONENT_FSAL,
-		 "MEM module setup.");
+	LogDebug(COMPONENT_FSAL, "MEM module setup.");
 
 	/* get a copy of the defaults */
 	mem_me->fs_info = default_mem_info;
@@ -137,6 +134,15 @@ static fsal_status_t mem_init_config(struct fsal_module *fsal_hdl,
 				      err_type);
 	if (!config_error_is_harmless(err_type))
 		return fsalstat(ERR_FSAL_INVAL, 0);
+
+	/* Initialize UP calls */
+	status = mem_up_pkginit();
+	if (FSAL_IS_ERROR(status)) {
+		LogMajor(COMPONENT_FSAL,
+			 "Failed to initialize FSAL_MEM UP package %s",
+			 fsal_err_txt(status));
+		return status;
+	}
 
 	display_fsinfo(&mem_me->fs_info);
 	LogFullDebug(COMPONENT_FSAL,
@@ -195,6 +201,8 @@ MODULE_INIT void init(void)
 	myself->m_ops.create_export = mem_create_export;
 	myself->m_ops.init_config = mem_init_config;
 	myself->m_ops.support_ex = mem_support_ex;
+	glist_init(&MEM.mem_exports);
+	MEM.next_inode = 0xc0ffee;
 }
 
 MODULE_FINI void finish(void)
@@ -203,6 +211,9 @@ MODULE_FINI void finish(void)
 
 	LogDebug(COMPONENT_FSAL,
 		 "MEM module finishing.");
+
+	/* Shutdown UP calls */
+	mem_up_pkgshutdown();
 
 	retval = unregister_fsal(&MEM.fsal);
 	if (retval != 0) {

@@ -45,31 +45,39 @@
 #include "gsh_intrinsic.h"
 
 struct _ganesha_health {
-	int old_enqueue;
-	int old_dequeue;
-	int enqueue_diff;
-	int dequeue_diff;
+	uint32_t old_enqueue;
+	uint32_t old_dequeue;
 };
 
 struct _ganesha_health healthstats;
 
 bool get_ganesha_health(struct _ganesha_health *hstats)
 {
-	int newenq, newdeq;
+	uint32_t newenq, newdeq;
+	uint32_t dequeue_diff, enqueue_diff;
+	bool healthy;
 
 	newenq = get_enqueue_count();
 	newdeq = get_dequeue_count();
-	hstats->enqueue_diff = newenq - hstats->old_enqueue;
-	hstats->dequeue_diff = newdeq - hstats->old_dequeue;
+	enqueue_diff = newenq - hstats->old_enqueue;
+	dequeue_diff = newdeq - hstats->old_dequeue;
+
+	/* Consider healthy and making progress if we have dequeued some
+	 * requests or there is nothing to dequeue.
+	 */
+	healthy = dequeue_diff > 0 || enqueue_diff == 0;
+
+	if (!healthy) {
+		LogWarn(COMPONENT_DBUS,
+			"Health status is unhealthy.enq new: %u, old: %u, "
+			"deq new: %u, old: %u", newenq, hstats->old_enqueue,
+			newdeq, hstats->old_dequeue);
+	}
+
 	hstats->old_enqueue = newenq;
 	hstats->old_dequeue = newdeq;
 
-	/*
-	 * health state indicates if we are making progress draining the
-	 * request queue.
-	 */
-	return (hstats->enqueue_diff > 0 && hstats->dequeue_diff > 0) ||
-		(hstats->enqueue_diff == 0);
+	return healthy;
 }
 
 int dbus_heartbeat_cb(void *arg)
@@ -93,9 +101,7 @@ int dbus_heartbeat_cb(void *arg)
 				err);
 			rc = BCAST_STATUS_WARN;
 		}
-	} else
-		LogWarn(COMPONENT_DBUS,
-			"Health status is unhealthy.  Not sending heartbeat");
+	}
 
 	return rc;
 }

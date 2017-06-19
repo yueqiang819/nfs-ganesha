@@ -31,6 +31,29 @@
 #include <utime.h>
 #include <sys/time.h>
 
+/* Setup up_vector. File system's upvector_mutex must be held */
+static bool setup_up_vector(struct gpfs_filesystem *gpfs_fs)
+{
+	struct gpfs_filesystem_export_map *map;
+
+	map = glist_first_entry(&gpfs_fs->exports,
+				struct gpfs_filesystem_export_map, on_exports);
+	if (!map)
+		return false;
+
+	gpfs_fs->up_vector = (struct fsal_up_vector *)map->exp->export.up_ops;
+
+	/* wait for upcall readiness */
+	up_ready_wait(gpfs_fs->up_vector);
+
+	/* Set up op_ctx for the thread */
+	op_ctx = &gpfs_fs->req_ctx;
+	op_ctx->fsal_export = gpfs_fs->up_vector->up_fsal_export;
+	op_ctx->ctx_export = gpfs_fs->up_vector->up_gsh_export;
+
+	return true;
+}
+
 /**
  * @brief Up Thread
  *
@@ -40,7 +63,7 @@
 void *GPFSFSAL_UP_Thread(void *Arg)
 {
 	struct gpfs_filesystem *gpfs_fs = Arg;
-	const struct fsal_up_vector *event_func;
+	struct fsal_up_vector *event_func;
 	char thr_name[16];
 	int rc = 0;
 	struct pnfs_deviceid devid;
@@ -54,10 +77,9 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 	int retry = 0;
 	struct gsh_buffdesc key;
 	uint32_t expire_time_attr = 0;
-	uint32_t upflags = 0;
+	uint32_t upflags;
 	int errsv = 0;
 	fsal_status_t fsal_status = {0,};
-	struct req_op_context req_ctx = {0};
 
 #ifdef _VALGRIND_MEMCHECK
 		memset(&handle, 0, sizeof(handle));
@@ -70,14 +92,6 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 		 "fsal_up_%"PRIu64".%"PRIu64,
 		 gpfs_fs->fs->dev.major, gpfs_fs->fs->dev.minor);
 	SetNameFunction(thr_name);
-
-	/* Set the FSAL UP functions that will be used to process events. */
-	event_func = gpfs_fs->up_ops;
-
-	/* Set up op_ctx for this thread */
-	req_ctx.fsal_export = event_func->up_fsal_export;
-	req_ctx.ctx_export = event_func->up_gsh_export;
-	op_ctx = &req_ctx;
 
 	LogFullDebug(COMPONENT_FSAL_UP,
 		     "Initializing FSAL Callback context for %d.",
@@ -177,6 +191,17 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 
 		LogDebug(COMPONENT_FSAL_UP, "Received event to process for %d",
 			 gpfs_fs->root_fd);
+
+		/* We need valid up_vector while processing some of the
+		 * events below. Setup up vector and hold the mutex while
+		 * processing the event for the entire duration.
+		 */
+		PTHREAD_MUTEX_lock(&gpfs_fs->upvector_mutex);
+		if (!setup_up_vector(gpfs_fs)) {
+			PTHREAD_MUTEX_unlock(&gpfs_fs->upvector_mutex);
+			return NULL;
+		}
+		event_func = gpfs_fs->up_vector;
 
 		switch (reason) {
 		case INODE_LOCK_GRANTED:	/* Lock Event */
@@ -330,17 +355,11 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 						FSAL_UP_INVALIDATE_CACHE);
 				} else {
 					/* buf may not have all attributes set.
-					 * Since posix2fsal_attributes() copies
-					 * all attributes and also sets
-					 * attr.mask, correct attr.mask with
-					 * valid upcall flags only before
-					 * passing the attr to update() which
-					 * actually updates the cache_inode
-					 * object attributes.
+					 * Set the mask to what is changed
 					 */
-					posix2fsal_attributes(&buf, &attr);
-					/* Set the mask to what is changed */
 					attr.valid_mask = 0;
+					attr.acl = NULL;
+					upflags = 0;
 					if (flags & UP_SIZE)
 						attr.valid_mask |=
 						   ATTR_CHGTIME | ATTR_CHANGE |
@@ -370,19 +389,24 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 						attr.valid_mask |=
 						   ATTR_CHGTIME | ATTR_CHANGE |
 						   ATTR_ATIME;
+					if (flags & UP_NLINK)
+						attr.valid_mask |=
+							ATTR_NUMLINKS;
+					attr.request_mask = attr.valid_mask;
 
 					attr.expire_time_attr =
 					    expire_time_attr;
 
+					posix2fsal_attributes(&buf, &attr);
 					fsal_status = event_func->
 					    update(event_func,
 						   &key, &attr, upflags);
 
 					if ((flags & UP_NLINK)
 					    && (attr.numlinks == 0)) {
-						upflags = fsal_up_nlink |
-							  fsal_up_close;
+						upflags = fsal_up_nlink;
 						attr.valid_mask = 0;
+						attr.request_mask = 0;
 						fsal_status = up_async_update
 						    (general_fridge,
 						     event_func,
@@ -397,6 +421,7 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 			LogDebug(COMPONENT_FSAL_UP,
 				"Terminating the GPFS up call thread for %d",
 				gpfs_fs->root_fd);
+			PTHREAD_MUTEX_unlock(&gpfs_fs->upvector_mutex);
 			return NULL;
 
 		case INODE_INVALIDATE:
@@ -417,12 +442,16 @@ void *GPFSFSAL_UP_Thread(void *Arg)
 			 * eventually get other errors that stop this
 			 * thread.
 			 */
+			PTHREAD_MUTEX_unlock(&gpfs_fs->upvector_mutex);
 			continue; /* get next event */
 
 		default:
+			PTHREAD_MUTEX_unlock(&gpfs_fs->upvector_mutex);
 			LogWarn(COMPONENT_FSAL_UP, "Unknown event: %d", reason);
 			continue;
 		}
+
+		PTHREAD_MUTEX_unlock(&gpfs_fs->upvector_mutex);
 
 		if (FSAL_IS_ERROR(fsal_status) &&
 		    fsal_status.major != ERR_FSAL_NOENT) {
