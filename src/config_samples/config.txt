@@ -483,6 +483,8 @@ CACHEINODE
 
 	Dir_Chunk(uint32, range 0 to UINT32_MAX, default 128)
 
+	Chunks_HWMark(uint32, range 1 to UINT32_MAX, default 100000)
+
 	Entries_HWMark(uint32, range 1 to UINT32_MAX, default 100000)
 
 	LRU_Run_Interval(uint32, range 1 to 24 * 3600, default 90)
@@ -569,24 +571,24 @@ RGW {}
 	startup of the FSAL's radosgw instance.
 
 	* ceph_conf -- optional full-path to the Ceph configuration
-          file (equivalent to passing "-c /path/to/ceph.conf" to any
+      file (equivalent to passing "-c /path/to/ceph.conf" to any
 	  Ceph binary
 
 	* name -- optional instance name (equivalent to passing
-	"--name ceph.rgw.foohost" to the radosgw binary);  the value
-	provided here should be the same as the section name (sans
-	brackets) of the radosgw facility in the Ceph configuration
-	file (which must exist)
+	  "--name client.rgw.foohost" to the radosgw binary);  the value
+	  provided here should be the same as the section name (sans
+	  brackets) of the radosgw facility in the Ceph configuration
+	  file (which must exist)
 
 	* cluster -- optional cluster name (equivalent to passing
-	"--cluster foo" to any Ceph binary);  use of a non-default
-	value for cluster name is uncommon, but can be verified by
-	examining the startup options of Ceph binaries
+	  "--cluster foo" to any Ceph binary);  use of a non-default
+	  value for cluster name is uncommon, but can be verified by
+	  examining the startup options of Ceph binaries
 
 	* init_args -- additional argument strings which will be
-	passed verbatim to the radosgw instance startup process as
-	if they had been given on the radosgw command line;  provided
-	for customization in uncommon setups
+	  passed verbatim to the radosgw instance startup process as
+	  if they had been given on the radosgw command line;  provided
+	  for customization in uncommon setups
 
 	ceph_conf(path, default "")
 
@@ -701,7 +703,7 @@ PROXY { Remote_Server {} }
 
 	NFS_Port(uint16, range 0 to UINT16_MAX, default 2049)
 
-	Use_Privileged_Client_Port(bool, default false)
+	Use_Privileged_Client_Port(bool, default true)
 
 	RPC_Client_Timeout(uint32, range 1 to 60*4, default 60)
 

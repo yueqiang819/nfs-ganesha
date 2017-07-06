@@ -39,7 +39,7 @@ ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQU
 # Patch level is always ".0" for mainline (master).  It is blank for development.
 # When starting a stable maintenance branch, this becomes ".N"
 # where N is monotonically increasing starting at 1. Remember to include the "." !!
-set(GANESHA_PATCH_LEVEL .0.1)
+set(GANESHA_PATCH_LEVEL .0.3)
 
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
@@ -80,6 +80,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
      set(LIBEXECDIR "/usr/lib")
   elseif( ${SYS_RELEASE} MATCHES "SLES" )
      message( STATUS "Detected a Linux SLES machine" )
+     set(DISTRO "SLES")
+     set(LIBEXECDIR "/usr/lib")
+  elseif( ${SYS_RELEASE} MATCHES "openSUSE Leap" )
+     message( STATUS "Detected a Linux openSUSE machine" )
      set(DISTRO "SLES")
      set(LIBEXECDIR "/usr/lib")
   else( ${SYS_RELEASE} MATCHES "Red Hat" )
@@ -886,7 +890,7 @@ if(USE_9P_RDMA)
   link_directories (${MOOSHIKA_LIBRARY_DIRS})
 endif(USE_9P_RDMA)
 
-set(NTIRPC_MIN_VERSION 1.4.0)
+set(NTIRPC_MIN_VERSION 1.5.0)
 if (USE_SYSTEM_NTIRPC)
   find_package(NTIRPC ${NTIRPC_MIN_VERSION} REQUIRED)
 else (USE_SYSTEM_NTIRPC)

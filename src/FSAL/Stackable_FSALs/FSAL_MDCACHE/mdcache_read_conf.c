@@ -67,6 +67,8 @@ static struct config_item mdcache_params[] = {
 		       mdcache_parameter, dir.avl_chunk),
 	CONF_ITEM_UI32("Entries_HWMark", 1, UINT32_MAX, 100000,
 		       mdcache_parameter, entries_hwmark),
+	CONF_ITEM_UI32("Chunks_HWMark", 1, UINT32_MAX, 100000,
+		       mdcache_parameter, chunks_hwmark),
 	CONF_ITEM_UI32("LRU_Run_Interval", 1, 24 * 3600, 90,
 		       mdcache_parameter, lru_run_interval),
 	CONF_ITEM_BOOL("Cache_FDs", true,
@@ -120,6 +122,12 @@ int mdcache_set_param_from_conf(config_file_t parse_tree,
 			"Error while parsing MDCACHE specific configuration");
 		return -1;
 	}
+
+	/* Compute avl_chunk_split after reading config, make sure it's a
+	 * multiple of two.
+	 */
+	mdcache_param.dir.avl_chunk_split =
+		((mdcache_param.dir.avl_chunk * 3) / 2) & (UINT32_MAX - 1);
 
 	return 0;
 }

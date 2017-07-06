@@ -58,7 +58,7 @@ static inline bool trust_negative_cache(mdcache_entry_t *parent)
 	return op_ctx_export_has_option(
 				  EXPORT_OPTION_TRUST_READIR_NEGATIVE_CACHE) &&
 		parent->icreate_refcnt == 0 &&
-		(parent->mde_flags & MDCACHE_DIR_POPULATED) != 0;
+		test_mde_flags(parent, MDCACHE_DIR_POPULATED);
 }
 
 /**
@@ -414,14 +414,18 @@ void mdcache_clean_dirent_chunk(struct dir_chunk *chunk)
 		if (dirent->ckey.kv.len)
 			mdcache_key_delete(&dirent->ckey);
 		gsh_free(dirent);
-
-		/* Don't count this dirent anymore. */
-		parent->fsobj.fsdir.nbactive--;
 	}
 
-	/* Remove chunk from directory and free it */
+	/* Remove chunk from directory. */
 	glist_del(&chunk->chunks);
-	gsh_free(chunk);
+
+	/* At this point the following is true about the chunk:
+	 *
+	 * chunks is {NULL, NULL} do to the glist_del
+	 * dirents is {&dirents, &dirents}, i.e. empty as a result of the
+	 *                                  glist_for_each_safe above
+	 * the other fields are untouched.
+	 */
 }
 
 /**
@@ -438,9 +442,7 @@ void mdcache_clean_dirent_chunks(mdcache_entry_t *entry)
 	struct glist_head *glist, *glistn;
 
 	glist_for_each_safe(glist, glistn, &entry->fsobj.fsdir.chunks) {
-		mdcache_clean_dirent_chunk(glist_entry(glist,
-						       struct dir_chunk,
-						       chunks));
+		lru_remove_chunk(glist_entry(glist, struct dir_chunk, chunks));
 	}
 }
 
@@ -467,7 +469,6 @@ void mdcache_dirent_invalidate_all(mdcache_entry_t *entry)
 
 	/* First the active tree */
 	mdcache_avl_clean_tree(&entry->fsobj.fsdir.avl.t);
-	entry->fsobj.fsdir.nbactive = 0;
 	atomic_clear_uint32_t_bits(&entry->mde_flags, MDCACHE_DIR_POPULATED);
 
 	/* Next the inactive tree */
@@ -1064,21 +1065,25 @@ fsal_status_t mdc_try_get_cached(mdcache_entry_t *mdc_parent,
 	LogFullDebug(COMPONENT_CACHE_INODE,
 		     "Look in cache %s, trust content %s",
 		     name,
-		     mdc_parent->mde_flags & MDCACHE_TRUST_CONTENT
+		     test_mde_flags(mdc_parent, MDCACHE_TRUST_CONTENT)
 				? "yes" : "no");
 
 	*entry = NULL;
 
 	/* If parent isn't caching, return stale */
-	if (mdc_parent->mde_flags & MDCACHE_BYPASS_DIRCACHE)
+	if (test_mde_flags(mdc_parent, MDCACHE_BYPASS_DIRCACHE))
 		return fsalstat(ERR_FSAL_STALE, 0);
 
 	/* If the dirent cache is untrustworthy, don't even ask it */
-	if (!(mdc_parent->mde_flags & MDCACHE_TRUST_CONTENT))
+	if (!test_mde_flags(mdc_parent, MDCACHE_TRUST_CONTENT))
 		return fsalstat(ERR_FSAL_STALE, 0);
 
 	dirent = mdcache_avl_qp_lookup_s(mdc_parent, name, 1);
 	if (dirent) {
+		if (dirent->chunk != NULL) {
+			/* Bump the chunk in the LRU */
+			lru_bump_chunk(dirent->chunk);
+		}
 		status = mdcache_find_keyed(&dirent->ckey, entry);
 		if (!FSAL_IS_ERROR(status))
 			return status;
@@ -1149,7 +1154,7 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 		goto out;
 	}
 
-	if (mdc_parent->mde_flags & MDCACHE_BYPASS_DIRCACHE) {
+	if (test_mde_flags(mdc_parent, MDCACHE_BYPASS_DIRCACHE)) {
 		/* Parent isn't caching dirents; call directly */
 		goto uncached;
 	}
@@ -1201,7 +1206,7 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 	}
 
 	/* Need to look up. */
-	if (!(mdc_parent->mde_flags & MDCACHE_TRUST_CONTENT)) {
+	if (!test_mde_flags(mdc_parent, MDCACHE_TRUST_CONTENT)) {
 		/* We have the write lock and the content is
 		 * still invalid.  Empty it out and mark it
 		 * valid in preparation for caching the result of this lookup.
@@ -1402,7 +1407,7 @@ fsal_status_t mdcache_dirent_find(mdcache_entry_t *dir, const char *name,
 		return fsalstat(ERR_FSAL_NOTDIR, 0);
 
 	/* If no active entry, do nothing */
-	if (dir->fsobj.fsdir.nbactive == 0) {
+	if (avltree_size(&dir->fsobj.fsdir.avl.t) == 0) {
 		if (mdc_dircache_trusted(dir))
 			return fsalstat(ERR_FSAL_NOENT, 0);
 		else
@@ -1460,7 +1465,7 @@ mdcache_dirent_add(mdcache_entry_t *parent, const char *name,
 		return fsalstat(ERR_FSAL_NOTDIR, 0);
 
 	/* Don't cache if parent is not being cached */
-	if (parent->mde_flags & MDCACHE_BYPASS_DIRCACHE)
+	if (test_mde_flags(parent, MDCACHE_BYPASS_DIRCACHE))
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 	/* in cache avl, we always insert on pentry_parent */
@@ -1484,29 +1489,21 @@ mdcache_dirent_add(mdcache_entry_t *parent, const char *name,
 	}
 
 	/* we're going to succeed */
-	if (new_dir_entry == allocated_dir_entry) {
-		/* We only want to count this entry if we did indeed add a new
-		 * one.
-		 */
-		parent->fsobj.fsdir.nbactive++;
+	if (new_dir_entry == allocated_dir_entry &&
+	    mdcache_param.dir.avl_chunk > 0) {
+		/* If chunking, try and add this entry to a chunk. */
+		bool chunked = add_dirent_to_chunk(parent, new_dir_entry);
 
-		if (mdcache_param.dir.avl_chunk > 0) {
-			/* If chunking, try and add this entry to a chunk. */
-			bool chunked = add_dirent_to_chunk(parent,
-							   new_dir_entry);
-
-			if (!chunked && *invalidate) {
-				/* If chunking and invalidating parent, and
-				 * chunking this entry failed, invalidate
-				 * parent.
-				 */
-				mdcache_dirent_invalidate_all(parent);
-			} else if (chunked && *invalidate) {
-				/* We succeeded in adding to chunk, don't
-				 * invalidate the parent directory.
-				 */
-				*invalidate = false;
-			}
+		if (!chunked && *invalidate) {
+			/* If chunking and invalidating parent, and chunking
+			 * this entry failed, invalidate parent.
+			 */
+			mdcache_dirent_invalidate_all(parent);
+		} else if (chunked && *invalidate) {
+			/* We succeeded in adding to chunk, don't invalidate the
+			 * parent directory.
+			 */
+			*invalidate = false;
 		}
 	}
 
@@ -1529,7 +1526,7 @@ mdcache_dirent_remove(mdcache_entry_t *parent, const char *name)
 	fsal_status_t status;
 
 	/* Don't remove if parent is not being cached */
-	if (parent->mde_flags & MDCACHE_BYPASS_DIRCACHE)
+	if (test_mde_flags(parent, MDCACHE_BYPASS_DIRCACHE))
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 	LogFullDebug(COMPONENT_CACHE_INODE, "Remove dir entry %s", name);
@@ -1544,7 +1541,6 @@ mdcache_dirent_remove(mdcache_entry_t *parent, const char *name)
 		return status;
 
 	avl_dirent_set_deleted(parent, dirent);
-	parent->fsobj.fsdir.nbactive--;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
@@ -1574,7 +1570,7 @@ mdcache_dirent_rename(mdcache_entry_t *parent, const char *oldname,
 		     oldname, newname);
 
 	/* Don't rename if parent is not being cached */
-	if (parent->mde_flags & MDCACHE_BYPASS_DIRCACHE)
+	if (test_mde_flags(parent, MDCACHE_BYPASS_DIRCACHE))
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 
 	/* Don't rename if chunking. */
@@ -1596,7 +1592,7 @@ mdcache_dirent_rename(mdcache_entry_t *parent, const char *oldname,
 
 	if (dirent2) {
 		/* rename would cause a collision */
-		if (parent->mde_flags & MDCACHE_TRUST_CONTENT) {
+		if (test_mde_flags(parent, MDCACHE_TRUST_CONTENT)) {
 			/* overwrite, replace entry and expire the old */
 			mdcache_entry_t *oldentry;
 
@@ -1783,6 +1779,8 @@ mdcache_readdir_uncached(mdcache_entry_t *directory, fsal_cookie_t *whence,
  * active dirent chunk, nothing happens. The dirent may still be inserted
  * into the by name lookup.
  *
+ * @note parent_dir MUST have it's content_lock held for writing
+ *
  * @param[in] parent_dir     The directory this dir entry is part of
  * @param[in] new_dir_entry  The dirent to add.
  *
@@ -1797,6 +1795,7 @@ bool add_dirent_to_chunk(mdcache_entry_t *parent_dir,
 	struct avltree_node *node, *parent, *unbalanced, *other;
 	int is_left, code;
 	fsal_cookie_t ck, nck;
+	struct dir_chunk *chunk;
 
 	subcall(
 		ck = parent_dir->sub_handle->obj_ops.compute_readdir_cookie(
@@ -1974,10 +1973,10 @@ bool add_dirent_to_chunk(mdcache_entry_t *parent_dir,
 	/* Set up to add to chunk and by cookie AVL tree. */
 	if (right == NULL) {
 		/* Will go at end of left chunk. */
-		new_dir_entry->chunk = left->chunk;
+		chunk = new_dir_entry->chunk = left->chunk;
 	} else {
 		/* Will go at begin of right chunk. */
-		new_dir_entry->chunk = right->chunk;
+		chunk = new_dir_entry->chunk = right->chunk;
 	}
 
 	code = mdcache_avl_insert_ck(parent_dir, new_dir_entry);
@@ -2041,12 +2040,61 @@ bool add_dirent_to_chunk(mdcache_entry_t *parent_dir,
 				     new_dir_entry->ck);
 			parent_dir->fsobj.fsdir.first_ck = new_dir_entry->ck;
 		}
-
-		/** @todo FSF - split chunk if desired... */
 	}
 
 	/* And now increment the number of entries in the chunk. */
-	new_dir_entry->chunk->num_entries++;
+	chunk->num_entries++;
+
+	/* And bump the chunk in the LRU */
+	lru_bump_chunk(chunk);
+
+	if (chunk->num_entries == mdcache_param.dir.avl_chunk_split) {
+		/* Create a new chunk */
+		struct dir_chunk *split;
+		struct glist_head *glist;
+		mdcache_dir_entry_t *here = NULL;
+		int i = 0;
+		uint32_t split_count = mdcache_param.dir.avl_chunk_split / 2;
+
+		split = mdcache_get_chunk(parent_dir);
+		split->prev_chunk = chunk;
+		split->next_ck = chunk->next_ck;
+
+		glist_add_tail(&chunk->parent->fsobj.fsdir.chunks,
+			       &split->chunks);
+
+		/* Make sure this chunk is in the MRU of L1 */
+		lru_bump_chunk(split);
+
+		/* Scan the list to find what will be the first dirent in the
+		 * new split chunk.
+		 */
+		glist_for_each(glist, &chunk->dirents) {
+			if (++i > (split_count)) {
+				/* Got past the halfway point. */
+				here = glist_entry(glist,
+						   mdcache_dir_entry_t,
+						   chunk_list);
+				break;
+			}
+		}
+
+		assert(here != NULL);
+
+		LogFullDebug(COMPONENT_CACHE_INODE,
+			     "Splitting chunk %p for directory %p at %s",
+			     chunk, parent_dir, here->name);
+
+		/* Split chunk->dirents into split->dirents at here */
+		glist_split(&chunk->dirents, &split->dirents, glist);
+		chunk->num_entries = split_count;
+		split->num_entries = split_count;
+
+		/* Fill in the first chunk's next_ck to be the cookie of the
+		 * first dirent in the new split chunk.
+		 */
+		chunk->next_ck = here->ck;
+	}
 
 	new_dir_entry->flags |= DIR_ENTRY_SORTED;
 
@@ -2100,11 +2148,9 @@ mdc_readdir_chunk_object(const char *name, struct fsal_obj_handle *sub_handle,
 
 
 		/* Now start a new chunk. */
-		new_chunk = gsh_calloc(1, sizeof(struct dir_chunk));
+		new_chunk = mdcache_get_chunk(chunk->parent);
 
 		/* Setup new chunk. */
-		glist_init(&new_chunk->dirents);
-		new_chunk->parent = chunk->parent;
 		new_chunk->prev_chunk = chunk;
 
 		/* And switch over to new chunk. */
@@ -2190,14 +2236,7 @@ mdc_readdir_chunk_object(const char *name, struct fsal_obj_handle *sub_handle,
 	 * The existing dirent might or might not be part of a chunk already.
 	 */
 
-	if (new_dir_entry == allocated_dir_entry) {
-		/* We didn't have a swaparoo, so go ahead count it against this
-		 * directorie's max number of active dirents, otherwise we don't
-		 * want to double count entries that were in the dirent cache
-		 * already due to being put there by create or lookup.
-		 */
-		mdc_parent->fsobj.fsdir.nbactive++;
-	} else {
+	if (new_dir_entry != allocated_dir_entry) {
 		LogFullDebug(COMPONENT_CACHE_INODE,
 			     "Swapped using %p instead of %p, new_dir_entry->chunk=%p",
 			     new_dir_entry, allocated_dir_entry,
@@ -2393,7 +2432,7 @@ fsal_status_t mdcache_populate_dir_chunk(mdcache_entry_t *directory,
 	fsal_status_t status = {0, 0};
 	fsal_status_t readdir_status = {0, 0};
 	struct mdcache_populate_cb_state state;
-	struct dir_chunk *first_chunk = gsh_calloc(1, sizeof(struct dir_chunk));
+	struct dir_chunk *first_chunk = mdcache_get_chunk(directory);
 	struct dir_chunk *chunk = first_chunk;
 	attrmask_t attrmask;
 	bool eod = false;
@@ -2420,8 +2459,6 @@ again:
 	 * prev_chunk has been updated to point to the last cached chunk.
 	 */
 
-	glist_init(&chunk->dirents);
-	chunk->parent = directory;
 	chunk->prev_chunk = prev_chunk;
 
 	LogFullDebug(COMPONENT_NFS_READDIR, "Calling FSAL readdir");
@@ -2453,7 +2490,7 @@ again:
 		LogDebug(COMPONENT_NFS_READDIR, "FSAL readdir status=%s",
 			 fsal_err_txt(readdir_status));
 		*dirent = NULL;
-		gsh_free(chunk);
+		lru_remove_chunk(chunk);
 		return readdir_status;
 	}
 
@@ -2461,7 +2498,7 @@ again:
 		LogDebug(COMPONENT_NFS_READDIR, "status=%s",
 			 fsal_err_txt(status));
 		*dirent = NULL;
-		gsh_free(chunk);
+		lru_remove_chunk(chunk);
 		return status;
 	}
 
@@ -2481,7 +2518,7 @@ again:
 		 */
 		LogFullDebug(COMPONENT_NFS_READDIR, "Empty chunk");
 
-		gsh_free(chunk);
+		lru_remove_chunk(chunk);
 
 		if (chunk == first_chunk) {
 			/* We really got nothing on this readdir, so don't
@@ -2549,7 +2586,7 @@ again:
 		prev_chunk = chunk;
 
 		/* And we need to allocate a fresh chunk. */
-		chunk = gsh_calloc(1, sizeof(struct dir_chunk));
+		chunk = mdcache_get_chunk(directory);
 
 		/* And go start a new FSAL readdir call. */
 		goto again;
@@ -2600,7 +2637,7 @@ fsal_status_t mdcache_readdir_chunked(mdcache_entry_t *directory,
 	bool first_pass = true;
 
 	/* Dirent's are being chunked; check to see if it needs updating */
-	if ((directory->mde_flags & MDCACHE_TRUST_CONTENT) == 0) {
+	if (!test_mde_flags(directory, MDCACHE_TRUST_CONTENT)) {
 		/* Clean out the existing entries in the directory. */
 		PTHREAD_RWLOCK_wrlock(&directory->content_lock);
 		mdcache_dirent_invalidate_all(directory);
@@ -2737,6 +2774,9 @@ again:
 
 	/* dirent WILL be non-NULL, remember the chunk we are in. */
 	chunk = dirent->chunk;
+
+	/* Bump the chunk in the LRU */
+	lru_bump_chunk(chunk);
 
 	LogFullDebug(COMPONENT_NFS_READDIR,
 		     "About to read directory=%p cookie=%" PRIx64,
@@ -2976,8 +3016,8 @@ mdcache_dirent_populate(mdcache_entry_t *dir)
 		return fsalstat(ERR_FSAL_NOTDIR, 0);
 	}
 
-	if ((dir->mde_flags & MDCACHE_DIR_POPULATED)
-	    && (dir->mde_flags & MDCACHE_TRUST_CONTENT)) {
+	if (test_mde_flags(dir, MDCACHE_DIR_POPULATED |
+				MDCACHE_TRUST_CONTENT)) {
 		LogFullDebug(COMPONENT_NFS_READDIR,
 			     "MDCACHE_DIR_POPULATED and MDCACHE_TRUST_CONTENT");
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
