@@ -66,12 +66,16 @@ struct mdcache_parameter {
 		 *  be split. Pre-computed for simplicity.
 		 */
 		uint32_t avl_chunk_split;
+		/** Detached dirent multiplier (of avl_chunk) */
+		uint32_t avl_detached_mult;
+		/** Computed max detached dirents */
+		uint32_t avl_detached_max;
 	} dir;
 	/** High water mark for cache entries.  Defaults to 100000,
 	    settable by Entries_HWMark. */
 	uint32_t entries_hwmark;
 	/** High water mark for chunks.  Defaults to 100000,
-	    settable by Entries_HWMark. */
+	    settable by Chunks_HWMark. */
 	uint32_t chunks_hwmark;
 	/** Base interval in seconds between runs of the LRU cleaner
 	    thread. Defaults to 60, settable with LRU_Run_Interval. */

@@ -206,6 +206,89 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 	return fsal_status;
 }
 
+
+#if ((LIBRGW_FILE_VER_MAJOR > 1) || \
+	((LIBRGW_FILE_VER_MAJOR == 1) && \
+	 ((LIBRGW_FILE_VER_MINOR > 1) || \
+	  ((LIBRGW_FILE_VER_MINOR == 1) && (LIBRGW_FILE_VER_EXTRA >= 4)))))
+#define HAVE_DIRENT_OFFSETOF 1
+#else
+#define HAVE_DIRENT_OFFSETOF 0
+#endif
+
+#if HAVE_DIRENT_OFFSETOF
+/**
+ * @brief Project cookie offset for a dirent name
+ *
+ * This optional API function produces the stable offset which
+ * corresponds to a given dirent name (FSALs for which there is
+ * no stable mapping will not implement).
+ *
+ * @param[in]  dir_hdl     The containing directory
+ * @param[in]  name        The dirent name
+ *
+ * @return FSAL status.
+ */
+
+static fsal_cookie_t rgw_fsal_compute_cookie(
+	struct fsal_obj_handle *dir_hdl,
+	const char *name)
+{
+	uint64_t offset = 0; /* XXX */
+
+	struct rgw_export *export =
+		container_of(op_ctx->fsal_export, struct rgw_export, export);
+
+	struct rgw_handle *dir = container_of(dir_hdl, struct rgw_handle,
+					handle);
+
+	LogFullDebug(COMPONENT_FSAL,
+		"%s enter dir_hdl %p name %s", __func__, dir_hdl, name);
+
+	if (unlikely(!strcmp(name, ".."))) {
+		return 1;
+	}
+
+	if (unlikely(!strcmp(name, "."))) {
+		return 2;
+	}
+
+	(void) rgw_dirent_offset(export->rgw_fs, dir->rgw_fh, name, &offset,
+				RGW_DIRENT_OFFSET_FLAG_NONE);
+
+	return offset;
+}
+#endif /* HAVE_DIRENT_OFFSETOF */
+
+/**
+ * @brief Help sort dirents.
+ *
+ * For FSALs that are able to compute the cookie for a filename
+ * deterministically from the filename, there must also be a defined order of
+ * entries in a directory based on the name (could be strcmp sort, could be
+ * strict alpha sort, could be deterministic order based on cookie).
+ *
+ * Although the cookies could be computed, the caller will already have them
+ * and thus will provide them to save compute time.
+ *
+ * @param[in]  parent   Directory entries belong to.
+ * @param[in]  name1    File name of first dirent
+ * @param[in]  cookie1  Cookie of first dirent
+ * @param[in]  name2    File name of second dirent
+ * @param[in]  cookie2  Cookie of second dirent
+ *
+ * @retval < 0 if name1 sorts before name2
+ * @retval == 0 if name1 sorts the same as name2
+ * @retval >0 if name1 sorts after name2
+ */
+int rgw_fsal_dirent_cmp(
+	struct fsal_obj_handle *parent,
+	const char *name1, fsal_cookie_t cookie1,
+	const char *name2, fsal_cookie_t cookie2)
+{
+	return strcmp(name1, name2);
+}
+
 /**
  * @brief Create a regular file
  *
@@ -1471,6 +1554,8 @@ fsal_status_t rgw_fsal_close2(struct fsal_obj_handle *obj_hdl,
 
 			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 		}
+	} else if (handle->openflags == FSAL_O_CLOSED) {
+		return fsalstat(ERR_FSAL_NOT_OPENED, 0);
 	}
 
 	rc = rgw_close(export->rgw_fs, handle->rgw_fh, RGW_CLOSE_FLAG_NONE);
@@ -1580,6 +1665,10 @@ void handle_ops_init(struct fsal_obj_ops *ops)
 	ops->create = rgw_fsal_create;
 	ops->mkdir = rgw_fsal_mkdir;
 	ops->readdir = rgw_fsal_readdir;
+#if HAVE_DIRENT_OFFSETOF
+	ops->compute_readdir_cookie = rgw_fsal_compute_cookie;
+#endif
+	ops->dirent_cmp = rgw_fsal_dirent_cmp;
 	ops->getattrs = getattrs;
 	ops->rename = rgw_fsal_rename;
 	ops->unlink = rgw_fsal_unlink;
