@@ -229,6 +229,7 @@ static void mem_remove_dirent_locked(struct mem_fsal_obj_handle *parent,
 		     numkids);
 
 	/* Free dirent */
+	gsh_free((char *)dirent->d_name);
 	gsh_free(dirent);
 
 	if (release && empty)
@@ -357,6 +358,9 @@ static fsal_status_t mem_open_my_fd(struct fsal_fd *fd,
  */
 static fsal_status_t mem_close_my_fd(struct fsal_fd *fd)
 {
+	if (fd->openflags == FSAL_O_CLOSED)
+		return fsalstat(ERR_FSAL_NOT_OPENED, 0);
+
 	fd->openflags = FSAL_O_CLOSED;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);

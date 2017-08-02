@@ -354,8 +354,10 @@ void dec_nlm_state_ref(state_t *state)
  * @param[in] state_type        type of state (LOCK or SHARE)
  * @param[in] state_obj         FSAL obj state applies to
  * @param[in] state_owner       NLM owner of the state
- * @param[in] nsm_state_applies True if nsm_state is available
- * @param[in] nsm_state         NSM state value for locks
+ * @param[in] care              Indicates to what degree the caller cares about
+ *                              actually getting a state.
+ * @param[in] nsm_state         NSM state value for locks, only valid when
+ *                              care == CARE_MONITOR
  * @param[out] pstate           Pointer to return the found state in
  *
  * @return NLM Status code or 0 if no special return
@@ -363,7 +365,7 @@ void dec_nlm_state_ref(state_t *state)
 int get_nlm_state(enum state_type state_type,
 		  struct fsal_obj_handle *state_obj,
 		  state_owner_t *state_owner,
-		  bool nsm_state_applies,
+		  care_t care,
 		  uint32_t nsm_state,
 		  state_t **pstate)
 {
@@ -399,20 +401,25 @@ int get_nlm_state(enum state_type state_type,
 	switch (rc) {
 	case HASHTABLE_SUCCESS:
 		state = buffval.addr;
-
-		if (nsm_state_applies &&
-		    (state->state_seqid != nsm_state ||
-		     atomic_fetch_int32_t(&state->state_refcount) == 0)) {
+		if (care == CARE_MONITOR && state->state_seqid != nsm_state) {
 			/* We are getting new locks before the old ones
-			 * are gone or the state is in the process of
-			 * getting deleted. We need to unhash this
-			 * state_t and create a new one.
+			 * are gone. We need to unhash this state_t and
+			 * create a new one.
 			 *
 			 * Keep the latch after the delete to proceed with
 			 * the new insert.
 			 */
+			hashtable_deletelatched(ht_nlm_states, &buffkey,
+						&latch, NULL, NULL);
+			break;
+		}
 
-			/* use the key to delete the entry */
+		if (atomic_inc_int32_t(&state->state_refcount) == 1) {
+			/* The state is in the process of getting
+			 * deleted. Delete from the hashtable and
+			 * pretend as though we didn't find it.
+			 */
+			(void)atomic_dec_int32_t(&state->state_refcount);
 			hashtable_deletelatched(ht_nlm_states, &buffkey,
 						&latch, NULL, NULL);
 			break;
@@ -423,12 +430,6 @@ int get_nlm_state(enum state_type state_type,
 			display_nlm_state(&dspbuf, state);
 			LogFullDebug(COMPONENT_STATE, "Found {%s}", str);
 		}
-
-		/* Increment refcount under hash latch.
-		 * This prevents dec ref from removing this entry from hash
-		 * if a race occurs.
-		 */
-		inc_state_t_ref(state);
 
 		hashtable_releaselatched(ht_nlm_states, &latch);
 
@@ -449,10 +450,10 @@ int get_nlm_state(enum state_type state_type,
 		return NLM4_DENIED_NOLOCKS;
 	}
 
-	/* If the nsm state doesn't apply, we don't want to create a new
-	 * state_t if one didn't exist already.
+	/* If we don't care at all, or only care about owner, we don't want to
+	 * create a new state.
 	 */
-	if (!nsm_state_applies) {
+	if (care == CARE_NOT || care == CARE_OWNER) {
 		hashtable_releaselatched(ht_nlm_states, &latch);
 		return 0;
 	}

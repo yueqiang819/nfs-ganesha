@@ -83,6 +83,9 @@ avl_dirent_set_deleted(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 		     "Delete dir entry %p %s",
 		     v, v->name);
 
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer);
+#endif
 	assert(!(v->flags & DIR_ENTRY_FLAG_DELETED));
 
 	node = avltree_inline_lookup_hk(&v->node_hk, &entry->fsobj.fsdir.avl.t);
@@ -165,6 +168,10 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 		     "Unchunking %p %s",
 		     dirent, dirent->name);
 
+#ifdef DEBUG_MDCACHE
+	assert(parent->content_lock.__data.__writer);
+#endif
+
 	/* Dirent is part of a chunk, must do additional clean
 	 * up.
 	 */
@@ -195,16 +202,28 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 /**
  * @brief Remove and free a dirent.
  *
+ * @param[in] parent    The directory removing from
  * @param[in] dirent    The dirent to remove
- * @param[in] t         The AVL tree to remove it from
  *
  */
-void mdcache_avl_remove(mdcache_dir_entry_t *dirent, struct avltree *t)
+void mdcache_avl_remove(mdcache_entry_t *parent,
+			mdcache_dir_entry_t *dirent)
 {
-	avltree_remove(&dirent->node_hk, t);
+	if (dirent->flags & DIR_ENTRY_FLAG_DELETED) {
+		/* Remove from deleted names tree */
+		avltree_remove(&dirent->node_hk, &parent->fsobj.fsdir.avl.c);
+	} else {
+		/* Remove from active names tree */
+		avltree_remove(&dirent->node_hk, &parent->fsobj.fsdir.avl.t);
+	}
 
-	if (dirent->chunk != NULL)
+	if (dirent->chunk != NULL) {
+		/* Dirent belongs to a chunk so remove it from the chunk. */
 		unchunk_dirent(dirent);
+	} else {
+		/* The dirent might be a detached dirent on an LRU list */
+		rmv_detached_dirent(parent, dirent);
+	}
 
 	if (dirent->ckey.kv.len)
 		mdcache_key_delete(&dirent->ckey);
@@ -239,7 +258,9 @@ mdcache_avl_insert_impl(mdcache_entry_t *entry, mdcache_dir_entry_t *v,
 	LogFullDebug(COMPONENT_CACHE_INODE,
 		     "Insert dir entry %p %s j=%d j2=%d",
 		     v, v->name, j, j2);
-
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer);
+#endif
 	/* first check for a previously-deleted entry */
 	node = avltree_inline_lookup_hk(&v->node_hk, c);
 
@@ -258,10 +279,10 @@ mdcache_avl_insert_impl(mdcache_entry_t *entry, mdcache_dir_entry_t *v,
 		 * have wildly differing lengths, so remove and free the
 		 * "deleted" entry.
 		 */
-		mdcache_avl_remove(avltree_container_of(node,
+		mdcache_avl_remove(entry,
+				   avltree_container_of(node,
 							mdcache_dir_entry_t,
-							node_hk),
-				   c);
+							node_hk));
 		node = NULL;
 	}
 
@@ -314,11 +335,13 @@ mdcache_avl_insert_impl(mdcache_entry_t *entry, mdcache_dir_entry_t *v,
 int mdcache_avl_insert_ck(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 {
 	struct avltree_node *node;
-
 	LogFullDebug(COMPONENT_CACHE_INODE,
 		     "Insert dirent %p for %s on entry=%p FSAL cookie=%"PRIx64,
 		     v, v->name, entry, v->ck);
 
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer);
+#endif
 	node = avltree_inline_insert(&v->node_ck, &entry->fsobj.fsdir.avl.ck,
 				     avl_dirent_ck_cmpf);
 
@@ -380,7 +403,9 @@ mdcache_avl_qp_insert(mdcache_entry_t *entry, mdcache_dir_entry_t **dirent)
 	LogFullDebug(COMPONENT_CACHE_INODE,
 		     "Insert dir entry %p %s",
 		     v, v->name);
-
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer);
+#endif
 	/* don't permit illegal cookies */
 #if AVL_HASH_MURMUR3
 	MurmurHash3_x64_128(v->name, strlen(v->name), 67, hk);
@@ -473,7 +498,7 @@ again:
 			}
 
 			/* Remove the found dirent. */
-			mdcache_avl_remove(v2, &entry->fsobj.fsdir.avl.t);
+			mdcache_avl_remove(entry, v2);
 			v2 = NULL;
 			goto again;
 		}
@@ -518,6 +543,9 @@ again:
 						     v2->eod ? "true" : "false",
 						     str);
 				}
+
+				/* Remove v2 from the detached entry cache */
+				rmv_detached_dirent(entry, v2);
 			}
 		} else if (v->chunk != NULL && v2->chunk != NULL) {
 			/* Handle cases where existing entry is in a chunk as
@@ -760,22 +788,35 @@ mdcache_avl_qp_lookup_s(mdcache_entry_t *entry, const char *name, int maxj)
 }
 
 /**
- * @brief Remove and free all dirents from a dirent tree
+ * @brief Remove and free all dirents from the dirent trees for a directory
  *
- * @param[in] tree	Tree to remove from
+ * @param[in] parent    The directory removing from
  */
-void mdcache_avl_clean_tree(struct avltree *tree)
+void mdcache_avl_clean_trees(mdcache_entry_t *parent)
 {
-	struct avltree_node *dirent_node = NULL;
-	mdcache_dir_entry_t *dirent = NULL;
+	struct avltree_node *dirent_node;
+	mdcache_dir_entry_t *dirent;
 
-	while ((dirent_node = avltree_first(tree))) {
+#ifdef DEBUG_MDCACHE
+	assert(parent->content_lock.__data.__writer);
+#endif
+
+	while ((dirent_node = avltree_first(&parent->fsobj.fsdir.avl.t))) {
 		dirent = avltree_container_of(dirent_node, mdcache_dir_entry_t,
 					      node_hk);
 		LogFullDebug(COMPONENT_CACHE_INODE, "Invalidate %p %s",
 			     dirent, dirent->name);
 
-		mdcache_avl_remove(dirent, tree);
+		mdcache_avl_remove(parent, dirent);
+	}
+
+	while ((dirent_node = avltree_first(&parent->fsobj.fsdir.avl.c))) {
+		dirent = avltree_container_of(dirent_node, mdcache_dir_entry_t,
+					      node_hk);
+		LogFullDebug(COMPONENT_CACHE_INODE, "Invalidate %p %s",
+			     dirent, dirent->name);
+
+		mdcache_avl_remove(parent, dirent);
 	}
 }
 

@@ -79,6 +79,8 @@
 #include "nfs4_acls.h"
 #include "sal_data.h"
 #include "nfs_init.h"
+#include "mdcache.h"
+
 
 #ifdef USE_BLKID
 static struct blkid_struct_cache *cache;
@@ -2563,6 +2565,7 @@ again:
 
 				/* Now close the already open descriptor. */
 				status = close_func(obj_hdl, my_fd);
+				(void) atomic_dec_size_t(&open_fd_count);
 
 				if (FSAL_IS_ERROR(status)) {
 					PTHREAD_RWLOCK_unlock(
@@ -2583,6 +2586,16 @@ again:
 				     "try_openflags = %x",
 				     try_openflags);
 
+			if (!mdcache_lru_fds_available()) {
+				PTHREAD_RWLOCK_unlock(
+						&obj_hdl->obj_lock);
+				*has_lock = false;
+				/* This seems the best idea, let the
+				 * client try again later after the reap.
+				 */
+				return fsalstat(ERR_FSAL_DELAY, 0);
+			}
+
 			/* Actually open the file */
 			status = open_func(obj_hdl, try_openflags, my_fd);
 
@@ -2594,6 +2607,8 @@ again:
 				*has_lock = false;
 				return status;
 			}
+
+			(void) atomic_inc_size_t(&open_fd_count);
 		}
 
 		/* Ok, now we should be in the correct mode.

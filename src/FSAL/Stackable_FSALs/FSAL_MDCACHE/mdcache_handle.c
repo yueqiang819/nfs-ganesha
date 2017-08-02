@@ -110,6 +110,14 @@ fsal_status_t mdcache_alloc_and_check_handle(
 		     tag, new_entry, new_entry->sub_handle->fsal->name,
 		     name);
 
+	if (*invalidate) {
+		/* This function is called after a create, so go ahead
+		 * and invalidate the parent directory attributes.
+		 */
+		atomic_clear_uint32_t_bits(&parent->mde_flags,
+					   MDCACHE_TRUST_ATTRS);
+	}
+
 	/* Add this entry to the directory (also takes an internal ref)
 	 */
 	status = mdcache_dirent_add(parent, name, new_entry, invalidate);
@@ -121,7 +129,7 @@ fsal_status_t mdcache_alloc_and_check_handle(
 
 		mdcache_put(new_entry);
 		*new_obj = NULL;
-		goto out;
+		return status;
 	}
 
 	if (new_entry->obj_handle.type == DIRECTORY) {
@@ -134,16 +142,6 @@ fsal_status_t mdcache_alloc_and_check_handle(
 	if (attrs_out != NULL) {
 		LogAttrlist(COMPONENT_CACHE_INODE, NIV_FULL_DEBUG,
 			    tag, attrs_out, true);
-	}
-
-out:
-
-	if (*invalidate) {
-		/* This function is called after a create, so go ahead
-		 * and invalidate the parent directory attributes.
-		 */
-		atomic_clear_uint32_t_bits(&parent->mde_flags,
-					   MDCACHE_TRUST_ATTRS);
 	}
 
 	return status;
@@ -557,15 +555,6 @@ static fsal_status_t mdcache_link(struct fsal_obj_handle *obj_hdl,
 		container_of(destdir_hdl, mdcache_entry_t, obj_handle);
 	fsal_status_t status;
 	bool invalidate = true;
-	mdcache_entry_t *mdc_lookup_dst = NULL;
-
-	status = mdc_try_get_cached(dest, name, &mdc_lookup_dst);
-
-	if (!FSAL_IS_ERROR(status) &&
-	    obj_is_junction(&mdc_lookup_dst->obj_handle)) {
-		/* Cannot link to a junction */
-		return fsalstat(ERR_FSAL_XDEV, 0);
-	}
 
 	subcall(
 		status = entry->sub_handle->obj_ops.link(
@@ -589,11 +578,8 @@ static fsal_status_t mdcache_link(struct fsal_obj_handle *obj_hdl,
 
 	/* Invalidate attributes, so refresh will be forced */
 	atomic_clear_uint32_t_bits(&entry->mde_flags, MDCACHE_TRUST_ATTRS);
-	if (invalidate) {
-		/* Invalidate attributes of destination directory. */
-		atomic_clear_uint32_t_bits(&dest->mde_flags,
-					   MDCACHE_TRUST_ATTRS);
-	} else {
+
+	if (!invalidate) {
 		/* Refresh destination directory attributes without
 		 * invalidating dirents.
 		 */
@@ -747,6 +733,11 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 		status = mdc_try_get_cached(directory, dirent->name, &entry);
 
 		if (status.major == ERR_FSAL_STALE) {
+			/* NOTE: We're supposed to hold the content_lock for
+			 *       write here, but to drop the lock we would then
+			 *       have to resume the readdir, which would mean
+			 *       adjusting whence from dirent->ck.
+			 */
 			status = mdc_lookup_uncached(directory, dirent->name,
 						     &entry, NULL);
 		}
@@ -869,19 +860,23 @@ static fsal_status_t mdcache_rename(struct fsal_obj_handle *obj_hdl,
 	mdcache_entry_t *mdc_obj =
 		container_of(obj_hdl, mdcache_entry_t, obj_handle);
 	mdcache_entry_t *mdc_lookup_dst = NULL;
+	bool refresh = false;
 	fsal_status_t status;
+
+	/* Now update cached dirents.  Must take locks in the correct order */
+	mdcache_src_dest_lock(mdc_olddir, mdc_newdir);
 
 	status = mdc_try_get_cached(mdc_newdir, new_name, &mdc_lookup_dst);
 
 	if (!FSAL_IS_ERROR(status)) {
 		if (mdc_obj == mdc_lookup_dst) {
 			/* Same source and destination */
-			goto out;
+			goto unlock;
 		}
 		if (obj_is_junction(&mdc_lookup_dst->obj_handle)) {
 			/* Cannot rename on top of junction */
 			status = fsalstat(ERR_FSAL_XDEV, 0);
-			goto out;
+			goto unlock;
 		}
 	}
 
@@ -892,10 +887,7 @@ static fsal_status_t mdcache_rename(struct fsal_obj_handle *obj_hdl,
 	       );
 
 	if (FSAL_IS_ERROR(status))
-		goto out;
-
-	/* Now update cached dirents.  Must take locks in the correct order */
-	mdcache_src_dest_lock(mdc_olddir, mdc_newdir);
+		goto unlock;
 
 	if (mdc_lookup_dst != NULL) {
 		/* Mark target file attributes as invalid */
@@ -959,6 +951,13 @@ static fsal_status_t mdcache_rename(struct fsal_obj_handle *obj_hdl,
 			mdcache_dirent_invalidate_all(mdc_olddir);
 		}
 
+		/** @todo: With chunking and compute cookie, we can actually
+		 *         figure out which chunk the new dirent belongs to
+		 *         without a lookup, so we could just invalidate that
+		 *         chunk and the rest of the directory can remain
+		 *         cached.
+		 */
+
 		/* Now new directory.  Here, we just need to invalidate dirents,
 		 * since we have a known missing dirent */
 		mdcache_dirent_invalidate_all(mdc_newdir);
@@ -966,7 +965,13 @@ static fsal_status_t mdcache_rename(struct fsal_obj_handle *obj_hdl,
 		/* Handle key is changing.  This means the old handle is
 		 * useless.  Mark it unreachable, forcing a lookup next time */
 		mdc_unreachable(mdc_obj);
-	} else if (mdc_olddir == mdc_newdir) {
+	} else if (mdc_olddir == mdc_newdir &&
+		   mdcache_param.dir.avl_chunk == 0) {
+		/** @todo: This code really doesn't accomplish anything
+		 *         different than the code below, and actually the
+		 *         code below has better invalidation characteristics
+		 *         for chunking, so we will remove it later.
+		 */
 		/* if the rename operation is made within the same dir, then we
 		 * use an optimization: mdcache_rename_dirent is used
 		 * instead of adding/removing dirent. This limits the use of
@@ -1038,7 +1043,7 @@ static fsal_status_t mdcache_rename(struct fsal_obj_handle *obj_hdl,
 			/* Refresh destination directory attributes without
 			 * invalidating dirents.
 			 */
-			mdcache_refresh_attrs_no_invalidate(mdc_newdir);
+			refresh = true;
 		}
 	}
 
@@ -1046,6 +1051,10 @@ unlock:
 
 	/* unlock entries */
 	mdcache_src_dest_unlock(mdc_olddir, mdc_newdir);
+
+	/* Refresh, if necessary.  Must be done without lock held */
+	if (refresh)
+		mdcache_refresh_attrs_no_invalidate(mdc_newdir);
 
 	/* If we're moving a directory out, update parent hash */
 	if (mdc_olddir != mdc_newdir && obj_hdl->type == DIRECTORY) {
@@ -1057,7 +1066,6 @@ unlock:
 		PTHREAD_RWLOCK_unlock(&mdc_obj->content_lock);
 	}
 
-out:
 	if (mdc_lookup_dst)
 		mdcache_put(mdc_lookup_dst);
 
