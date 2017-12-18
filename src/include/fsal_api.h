@@ -637,22 +637,6 @@ struct fsal_ops {
  */
 	void (*fsal_reset_stats)(struct fsal_module *const fsal_hdl);
 
-/**
- * @brief Provides function to extract FSAL stats
- *
- * @param[in] fsal_hdl		FSAL module
- * @param[in] iter		opaque pointer to DBusMessageIter
- */
-	void (*fsal_extract_stats)(struct fsal_module *const fsal_hdl,
-				   void *iter);
-
-/**
- * @brief FSAL function to reset FSAL stats
- *
- * @param[in] fsal_hdl          FSAL module
- */
-	void (*fsal_reset_stats)(struct fsal_module *const fsal_hdl);
-
 /**@}*/
 };
 

@@ -667,6 +667,7 @@ enum nfsstat4 release_lock_owner(state_owner_t *owner)
 	while (true) {
 		state_t *state;
 		struct fsal_export *save_exp;
+		struct gsh_export *save_export;
 
 		state = glist_first_entry(&owner->so_owner.so_nfs4_owner
 								.so_state_list,
@@ -686,12 +687,15 @@ enum nfsstat4 release_lock_owner(state_owner_t *owner)
 		/* Set the fsal_export properly, since this can be called from
 		 * ops that don't do a putfh */
 		save_exp = op_ctx->fsal_export;
+		save_export = op_ctx->ctx_export;
 		op_ctx->fsal_export = state->state_exp;
+		op_ctx->ctx_export = state->state_export;
 
 		state_del(state);
 
-		/* Restore fsal_export */
+		/* Restore export */
 		op_ctx->fsal_export = save_exp;
+		op_ctx->ctx_export = save_export;
 
 		dec_state_t_ref(state);
 
@@ -801,6 +805,11 @@ void release_openstate(state_owner_t *owner)
 
 		PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
 
+		/* In case op_ctx->export is not NULL... */
+		if (op_ctx->ctx_export != NULL) {
+			put_gsh_export(op_ctx->ctx_export);
+		}
+
 		/* op_ctx may be used by state_del_locked and others */
 		op_ctx->ctx_export = export;
 		op_ctx->fsal_export = export->fsal_export;
@@ -815,8 +824,11 @@ void release_openstate(state_owner_t *owner)
 
 		PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
-		/* Release ref we held during state_del */
+		/* Release refs we held during state_del */
 		obj->obj_ops.put_ref(obj);
+		put_gsh_export(op_ctx->ctx_export);
+		op_ctx->ctx_export = NULL;
+		op_ctx->fsal_export = NULL;
 	}
 
 	if (errcnt == STATE_ERR_MAX) {
@@ -843,7 +855,7 @@ void revoke_owner_delegs(state_owner_t *client_owner)
 	struct fsal_obj_handle *obj;
 	bool so_mutex_held;
 	struct gsh_export *export = NULL;
-	struct req_op_context *save_ctx, req_ctx = {0};
+	struct root_op_context ctx;
 	bool ok;
 
  again:
@@ -899,14 +911,20 @@ void revoke_owner_delegs(state_owner_t *client_owner)
 		 */
 		PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
 
-		/* op_ctx may be used by state_del_locked and others */
-		save_ctx = op_ctx;
-		op_ctx = &req_ctx;
-		op_ctx->ctx_export = export;
-		op_ctx->fsal_export = export->fsal_export;
+		/* Initialize req_ctx */
+		init_root_op_context(&ctx, export, export->fsal_export,
+				     0, 0, UNKNOWN_REQUEST);
 
 		state_deleg_revoke(obj, state);
-		op_ctx = save_ctx;
+
+		/* Release refs we held */
+		obj->obj_ops.put_ref(obj);
+		put_gsh_export(op_ctx->ctx_export);
+		op_ctx->ctx_export = NULL;
+		op_ctx->fsal_export = NULL;
+
+		release_root_op_context();
+
 		PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
 		/* Since we dropped so_mutex, we must restart the loop. */
