@@ -117,16 +117,24 @@ const char *xprt_type_to_str(xprt_type_t type)
 	switch (type) {
 	case XPRT_UNKNOWN:
 		return "UNKNOWN";
+	case XPRT_NON_RENDEZVOUS:
+		return "UNUSED";
 	case XPRT_UDP:
 		return "udp";
+	case XPRT_UDP_RENDEZVOUS:
+		return "udp rendezvous";
 	case XPRT_TCP:
 		return "tcp";
 	case XPRT_TCP_RENDEZVOUS:
 		return "tcp rendezvous";
 	case XPRT_SCTP:
 		return "sctp";
+	case XPRT_SCTP_RENDEZVOUS:
+		return "sctp rendezvous";
 	case XPRT_RDMA:
 		return "rdma";
+	case XPRT_RDMA_RENDEZVOUS:
+		return "rdma rendezvous";
 	case XPRT_VSOCK:
 		return "vsock";
 	case XPRT_VSOCK_RENDEZVOUS:
@@ -489,6 +497,6 @@ CLIENT *gsh_clnt_create(char *host, unsigned long prog, unsigned long vers,
 void gsh_clnt_destroy(CLIENT *clnt)
 {
 	PTHREAD_MUTEX_lock(&clnt_create_mutex);
-	clnt_destroy(clnt);
+	CLNT_DESTROY(clnt);
 	PTHREAD_MUTEX_unlock(&clnt_create_mutex);
 }

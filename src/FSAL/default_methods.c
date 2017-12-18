@@ -220,15 +220,26 @@ static void fsal_pnfs_ds_ops(struct fsal_pnfs_ds_ops *ops)
 }
 
 /**
- * @brief Indicate support for extended operations.
+ * @brief Provides function to extract FSAL stats
  *
- * @param[in]  obj	Object being operated on
- *
- * @retval true if extended operations are supported.
+ * @param[in] fsal_hdl          FSAL module
+ * @param[in] iter              opaque pointer to DBusMessageIter
  */
-static bool support_ex(struct fsal_obj_handle *obj)
+static void fsal_extract_stats(struct fsal_module *const fsal_hdl, void *iter)
 {
-	return false;
+	LogDebug(COMPONENT_FSAL,
+		"Invoking unsupported FSAL operation");
+}
+
+/**
+ * @brief FSAL function to reset FSAL stats
+ *
+ * @param[in] fsal_hdl          FSAL module
+ */
+static void fsal_reset_stats(struct fsal_module *const fsal_hdl)
+{
+	LogDebug(COMPONENT_FSAL,
+		"Invoking unsupported FSAL operation");
 }
 
 /**
@@ -268,7 +279,6 @@ struct fsal_ops def_fsal_ops = {
 	.fs_da_addr_size = fs_da_addr_size,
 	.fsal_pnfs_ds = fsal_pnfs_ds,
 	.fsal_pnfs_ds_ops = fsal_pnfs_ds_ops,
-	.support_ex = support_ex,
 	.fsal_extract_stats = fsal_extract_stats,
 	.fsal_reset_stats = fsal_reset_stats,
 };
@@ -794,20 +804,6 @@ int dirent_cmp(struct fsal_obj_handle *parent,
 	return 0;
 }
 
-/* create
- * default case not supported
- */
-
-static fsal_status_t create(struct fsal_obj_handle *dir_hdl,
-			    const char *name, struct attrlist *attrib,
-			    struct fsal_obj_handle **handle,
-			    struct attrlist *attrs_out)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
 /* makedir
  * default case not supported
  */
@@ -932,18 +928,6 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
-/* setattrs
- * default case not supported
- */
-
-static fsal_status_t setattrs(struct fsal_obj_handle *obj_hdl,
-			      struct attrlist *attrs)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
 /* linkfile
  * default case not supported
  */
@@ -985,30 +969,6 @@ static fsal_status_t file_unlink(struct fsal_obj_handle *dir_hdl,
 	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
-/* file_open
- * default case not supported
- */
-
-static fsal_status_t file_open(struct fsal_obj_handle *obj_hdl,
-			       fsal_openflags_t openflags)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* file_reopen
- * default case not supported
- */
-
-static fsal_status_t file_reopen(struct fsal_obj_handle *obj_hdl,
-				 fsal_openflags_t openflags)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
 /* fs_locations
  * default case not supported
  */
@@ -1016,71 +976,6 @@ static fsal_status_t file_reopen(struct fsal_obj_handle *obj_hdl,
 static fsal_status_t fs_locations(struct fsal_obj_handle *obj_hdl,
 				 struct fs_locations4 *fs_locs)
 {
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* file_status
- * default case file always closed
- */
-
-static fsal_openflags_t file_status(struct fsal_obj_handle *obj_hdl)
-{
-	return FSAL_O_CLOSED;
-}
-
-/* file_read
- * default case not supported
- */
-
-static fsal_status_t file_read(struct fsal_obj_handle *obj_hdl,
-			       uint64_t seek_descriptor, size_t buffer_size,
-			       void *buffer, size_t *read_amount,
-			       bool *end_of_file)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* file_read_plus
- * default case not supported
- */
-
-static fsal_status_t file_read_plus(struct fsal_obj_handle *obj_hdl,
-			       uint64_t seek_descriptor, size_t buffer_size,
-			       void *buffer, size_t *read_amount,
-			       bool *end_of_file, struct io_info *info)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* file_write
- * default case not supported
- */
-
-static fsal_status_t file_write(struct fsal_obj_handle *obj_hdl,
-				uint64_t seek_descriptor, size_t buffer_size,
-				void *buffer, size_t *write_amount,
-				bool *fsal_stable)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* file_write_plus
- * default case not supported
- */
-
-static fsal_status_t file_write_plus(struct fsal_obj_handle *obj_hdl,
-				uint64_t seek_descriptor, size_t buffer_size,
-				void *buffer, size_t *write_amount,
-				bool *fsal_stable, struct io_info *info)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
 	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
@@ -1106,46 +1001,6 @@ static fsal_status_t file_io_advise(struct fsal_obj_handle *obj_hdl,
 	hints->hints = 0;
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/* commit
- * default case not supported
- */
-
-static fsal_status_t commit(struct fsal_obj_handle *obj_hdl,	/* sync */
-			    off_t offset, size_t len)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* lock_op
- * default case not supported
- */
-
-static fsal_status_t lock_op(struct fsal_obj_handle *obj_hdl,
-			     void *p_owner,
-			     fsal_lock_op_t lock_op,
-			     fsal_lock_param_t *request_lock,
-			     fsal_lock_param_t *conflicting_lock)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
-}
-
-/* share_op
- * default case not supported
- */
-
-static fsal_status_t share_op(struct fsal_obj_handle *obj_hdl,
-			      void *p_owner,
-			      fsal_share_param_t request_share)
-{
-	LogCrit(COMPONENT_FSAL,
-		"Invoking unsupported FSAL operation");
-	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
 /* file_close
@@ -1413,7 +1268,6 @@ static fsal_status_t open2(struct fsal_obj_handle *obj_hdl,
 static bool check_verifier(struct fsal_obj_handle *obj_hdl,
 			   fsal_verifier_t verifier)
 {
-	uint32_t verf_hi = 0, verf_lo = 0;
 	struct attrlist attrs;
 	bool result;
 
@@ -1422,22 +1276,7 @@ static bool check_verifier(struct fsal_obj_handle *obj_hdl,
 	if (FSAL_IS_ERROR(obj_hdl->obj_ops.getattrs(obj_hdl, &attrs)))
 		return false;
 
-	memcpy(&verf_hi,
-	       verifier,
-	       sizeof(uint32_t));
-	memcpy(&verf_lo,
-	       verifier + sizeof(uint32_t),
-	       sizeof(uint32_t));
-
-	LogFullDebug(COMPONENT_FSAL,
-		     "Passed verifier %"PRIx32" %"PRIx32
-		     " file verifier %"PRIx32" %"PRIx32,
-		     verf_hi, verf_lo,
-		     (uint32_t) attrs.atime.tv_sec,
-		     (uint32_t) attrs.mtime.tv_sec);
-
-	result = attrs.atime.tv_sec == verf_hi &&
-		 attrs.mtime.tv_sec == verf_lo;
+	result = check_verifier_attrlist(&attrs, verifier);
 
 	/* Done with the attrs */
 	fsal_release_attrs(&attrs);
@@ -1562,6 +1401,20 @@ static fsal_status_t lock_op2(struct fsal_obj_handle *obj_hdl,
 	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
 }
 
+/* lease_op2
+ * default case not supported
+ */
+
+static fsal_status_t lease_op2(struct fsal_obj_handle *obj_hdl,
+				  struct state_t *state,
+				  void *owner,
+				  fsal_deleg_t deleg)
+{
+	LogCrit(COMPONENT_FSAL,
+		"Invoking unsupported FSAL operation");
+	return fsalstat(ERR_FSAL_NOTSUPP, ENOTSUP);
+}
+
 /* setattr2
  * default case not supported
  */
@@ -1601,30 +1454,18 @@ struct fsal_obj_ops def_handle_ops = {
 	.readdir = read_dirents,
 	.compute_readdir_cookie = compute_readdir_cookie,
 	.dirent_cmp = dirent_cmp,
-	.create = create,
 	.mkdir = makedir,
 	.mknode = makenode,
 	.symlink = makesymlink,
 	.readlink = readsymlink,
 	.test_access = fsal_test_access,	/* default is use common test */
 	.getattrs = getattrs,
-	.setattrs = setattrs,
 	.link = linkfile,
 	.rename = renamefile,
 	.unlink = file_unlink,
-	.open = file_open,
-	.reopen = file_reopen,
 	.fs_locations = fs_locations,
-	.status = file_status,
-	.read = file_read,
-	.read_plus = file_read_plus,
-	.write = file_write,
-	.write_plus = file_write_plus,
 	.seek = file_seek,
 	.io_advise = file_io_advise,
-	.commit = commit,
-	.lock_op = lock_op,
-	.share_op = share_op,
 	.close = file_close,
 	.list_ext_attrs = list_ext_attrs,
 	.getextattr_id_by_name = getextattr_id_by_name,
@@ -1655,6 +1496,7 @@ struct fsal_obj_ops def_handle_ops = {
 	.io_advise2 = io_advise2,
 	.commit2 = commit2,
 	.lock_op2 = lock_op2,
+	.lease_op2 = lease_op2,
 	.setattr2 = setattr2,
 	.close2 = close2,
 };

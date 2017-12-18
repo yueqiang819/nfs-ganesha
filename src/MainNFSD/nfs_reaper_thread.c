@@ -191,33 +191,20 @@ static int reap_expired_open_owners(void)
 }
 
 struct reaper_state {
-	bool old_state_cleaned;
 	size_t count;
 	bool logged;
-	bool in_grace;
 };
 
-static struct reaper_state reaper_state = {
-	.old_state_cleaned = false,
-	.count = 0,
-	.logged = false,
-	.in_grace = false
-};
+static struct reaper_state reaper_state;
 
 static void reaper_run(struct fridgethr_context *ctx)
 {
 	struct reaper_state *rst = ctx->arg;
 
 	SetNameFunction("reaper");
-	rst->in_grace = nfs_in_grace();
 
-	if (!rst->old_state_cleaned) {
-		/* if not in grace period, clean up the old state */
-		if (!rst->in_grace) {
-			nfs4_clean_old_recov_dir(v4_old_dir);
-			rst->old_state_cleaned = true;
-		}
-	}
+	/* try to lift the grace period */
+	nfs_try_lift_grace();
 
 	if (isDebug(COMPONENT_CLIENTID) && ((rst->count > 0) || !rst->logged)) {
 		LogDebug(COMPONENT_CLIENTID,

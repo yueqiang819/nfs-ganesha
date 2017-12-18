@@ -155,7 +155,7 @@ mem_rand_obj(struct mem_fsal_export *mfe)
 	if (glist_empty(&mfe->mfe_objs))
 		return NULL;
 
-	srand(time(NULL));
+	PTHREAD_RWLOCK_rdlock(&mfe->mfe_exp_lock);
 	glist_for_each_safe(glist, glistn, &mfe->mfe_objs) {
 		if (res == NULL) {
 			/* Grab first entry */
@@ -168,9 +168,11 @@ mem_rand_obj(struct mem_fsal_export *mfe)
 			/* Replace with current */
 			res = glist_entry(glist, struct mem_fsal_obj_handle,
 					  mfo_exp_entry);
+			break;
 		}
 		n++;
 	}
+	PTHREAD_RWLOCK_unlock(&mfe->mfe_exp_lock);
 
 	return res;
 }
@@ -228,6 +230,11 @@ mem_up_pkginit(void)
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 	}
 
+	if (mem_up_fridge) {
+		/* Already initialized */
+		return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	}
+
 	memset(&frp, 0, sizeof(struct fridgethr_params));
 	frp.thr_max = 1;
 	frp.thr_min = 1;
@@ -261,6 +268,11 @@ mem_up_pkginit(void)
 fsal_status_t
 mem_up_pkgshutdown(void)
 {
+	if (!mem_up_fridge) {
+		/* Interval wasn't configured */
+		return fsalstat(ERR_FSAL_NO_ERROR, 0);
+	}
+
 	int rc = fridgethr_sync_command(mem_up_fridge,
 					fridgethr_comm_stop,
 					120);
@@ -273,5 +285,8 @@ mem_up_pkgshutdown(void)
 		LogMajor(COMPONENT_FSAL_UP,
 			 "Failed shutting down MEM_UP thread: %d", rc);
 	}
+
+	fridgethr_destroy(mem_up_fridge);
+	mem_up_fridge = NULL;
 	return fsalstat(posix2fsal_error(rc), rc);
 }

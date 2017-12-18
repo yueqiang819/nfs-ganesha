@@ -43,6 +43,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <sched.h>
 #include "nfs4.h"
 #include "fsal.h"
 #include "sal_functions.h"
@@ -322,6 +323,7 @@ void free_client_id(nfs_client_id_t *clientid)
 #ifdef _HAVE_GSSAPI
 	if (clientid->cid_credential.flavor == RPCSEC_GSS) {
 		struct svc_rpc_gss_data *gd;
+
 		gd = clientid->cid_credential.auth_union.auth_gss.gd;
 		unref_svc_rpc_gss_data(gd, 0);
 	}
@@ -340,10 +342,8 @@ void free_client_id(nfs_client_id_t *clientid)
 		}
 	}
 
-	if (clientid->cid_recov_dir) {
-		gsh_free(clientid->cid_recov_dir);
-		clientid->cid_recov_dir = NULL;
-	}
+	gsh_free(clientid->cid_recov_tag);
+	clientid->cid_recov_tag = NULL;
 
 	PTHREAD_MUTEX_destroy(&clientid->cid_mutex);
 	PTHREAD_MUTEX_destroy(&clientid->cid_owner.so_mutex);
@@ -560,6 +560,7 @@ nfs_client_id_t *create_client_id(clientid4 clientid,
 #ifdef _HAVE_GSSAPI
 	if (credential->flavor == RPCSEC_GSS) {
 		struct svc_rpc_gss_data *gd;
+
 		gd = credential->auth_union.auth_gss.gd;
 		(void)atomic_inc_uint32_t(&gd->refcnt);
 	}
@@ -872,7 +873,7 @@ bool clientid_has_state(nfs_client_id_t *clientid)
  */
 bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 {
-	int rc;
+	int rc, held;
 	struct gsh_buffdesc buffkey;
 	struct gsh_buffdesc old_key;
 	struct gsh_buffdesc old_value;
@@ -988,9 +989,18 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 			       &owner->so_owner.so_nfs4_owner.so_perclient);
 
 		/* Hold a reference to the owner while we drop the cid_mutex. */
-		inc_state_owner_ref(owner);
+		held = hold_state_owner(owner);
 
 		PTHREAD_MUTEX_unlock(&clientid->cid_mutex);
+
+		/* If this owner is in the process of being freed, skip
+		 * and work on the next owner. We also do yield for the
+		 * other thread to complete freeing this owner!
+		 */
+		if (!held) {
+			sched_yield();
+			continue;
+		}
 
 		state_nfs4_owner_unlock_all(owner);
 
@@ -1045,9 +1055,18 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 			       &owner->so_owner.so_nfs4_owner.so_perclient);
 
 		/* Hold a reference to the owner while we drop the cid_mutex. */
-		inc_state_owner_ref(owner);
+		held = hold_state_owner(owner);
 
 		PTHREAD_MUTEX_unlock(&clientid->cid_mutex);
+
+		/* If this owner is in the process of being freed, skip
+		 * and work on the next owner. We also do yield for the
+		 * other thread to complete freeing this owner!
+		 */
+		if (!held) {
+			sched_yield();
+			continue;
+		}
 
 		release_openstate(owner);
 
@@ -1099,10 +1118,10 @@ bool nfs_client_id_expire(nfs_client_id_t *clientid, bool make_stale)
 		}
 	}
 
-	if (clientid->cid_recov_dir != NULL && !make_stale) {
-		nfs4_rm_clid(clientid->cid_recov_dir, v4_recov_dir, 0);
-		gsh_free(clientid->cid_recov_dir);
-		clientid->cid_recov_dir = NULL;
+	if (clientid->cid_recov_tag != NULL && !make_stale) {
+		nfs4_rm_clid(clientid);
+		gsh_free(clientid->cid_recov_tag);
+		clientid->cid_recov_tag = NULL;
 	}
 
 	if (isDebug(COMPONENT_CLIENTID)) {
@@ -1441,9 +1460,12 @@ int32_t dec_client_record_ref(nfs_client_record_t *record)
 	struct gsh_buffdesc old_value;
 	struct gsh_buffdesc old_key;
 	int32_t refcount;
+	bool str_valid = false;
 
-	if (isDebug(COMPONENT_CLIENTID))
+	if (isDebug(COMPONENT_CLIENTID)) {
 		display_client_record(&dspbuf, record);
+		str_valid = true;
+	}
 
 	refcount = atomic_dec_int32_t(&record->cr_refcount);
 
@@ -1455,48 +1477,49 @@ int32_t dec_client_record_ref(nfs_client_record_t *record)
 		return refcount;
 	}
 
+	assert(refcount == 0);
+
 	LogFullDebug(COMPONENT_CLIENTID, "Try to remove {%s}", str);
 
 	buffkey.addr = record;
 	buffkey.len = sizeof(*record);
 
-	/* Get the hash table entry and hold latch */
+	/* Since the refcount is zero, another thread that needs this
+	 * record might have deleted ours, so expect not to find one or
+	 * find someone else's record!
+	 */
 	rc = hashtable_getlatch(ht_client_record, &buffkey, &old_value, true,
 				&latch);
 
-	if (rc != HASHTABLE_SUCCESS) {
-		if (rc == HASHTABLE_ERROR_NO_SUCH_KEY)
-			hashtable_releaselatched(ht_client_record, &latch);
+	switch (rc) {
+	case HASHTABLE_SUCCESS:
+		/* If ours, delete from hash table */
+		if (old_value.addr == record) {
+			hashtable_deletelatched(ht_client_record, &buffkey,
+						&latch, &old_key, &old_value);
+		}
+		break;
 
-		display_client_record(&dspbuf, record);
+	case HASHTABLE_ERROR_NO_SUCH_KEY:
+		break;
 
+	default:
+		if (!str_valid) {
+			display_client_record(&dspbuf, record);
+		}
 		LogCrit(COMPONENT_CLIENTID, "Error %s, could not find {%s}",
 			hash_table_err_to_str(rc), str);
 
 		return refcount;
 	}
 
-	refcount = atomic_fetch_int32_t(&record->cr_refcount);
-
-	if (refcount > 0) {
-		LogDebug(COMPONENT_CLIENTID,
-			 "Did not release refcount now=%" PRId32 " {%s}",
-			 refcount, str);
-
-		hashtable_releaselatched(ht_client_record, &latch);
-		return refcount;
-	}
-
-	/* use the key to delete the entry */
-	hashtable_deletelatched(ht_client_record, &buffkey, &latch,
-				&old_key, &old_value);
-
 	/* Release the latch */
 	hashtable_releaselatched(ht_client_record, &latch);
 
-	LogFullDebug(COMPONENT_CLIENTID, "Free {%s}", str);
+	if (str_valid)
+		LogFullDebug(COMPONENT_CLIENTID, "Free {%s}", str);
 
-	free_client_record(old_value.addr);
+	free_client_record(record);
 
 	return refcount;
 }
@@ -1640,17 +1663,14 @@ nfs_client_record_t *get_client_record(const char *const value,
 				       const uint32_t server_addr)
 {
 	nfs_client_record_t *record;
+	nfs_client_record_t *old;
 	struct gsh_buffdesc buffkey;
 	struct gsh_buffdesc buffval;
 	struct hash_latch latch;
 	hash_error_t rc;
+	int32_t refcount;
 
-
-	if (len == 0) {
-		LogInfo(COMPONENT_CLIENTID,
-			"Refusing to create a record with an empty client_val, stopping.");
-		return NULL;
-	}
+	assert(len);
 
 	record = gsh_malloc(sizeof(nfs_client_record_t) + len);
 
@@ -1664,37 +1684,39 @@ nfs_client_record_t *get_client_record(const char *const value,
 	buffkey.addr = record;
 	buffkey.len = sizeof(*record);
 
-	/* If we found it, return it, if we don't care, return NULL */
 	rc = hashtable_getlatch(ht_client_record, &buffkey, &buffval, true,
 				&latch);
 
-	if (rc == HASHTABLE_SUCCESS) {
-		/* Discard the key we created and return the found
-		 * Client Record.  Directly free since we didn't
-		 * complete initialization.
-		 */
-		gsh_free(record);
-		record = buffval.addr;
-		inc_client_record_ref(record);
+	switch (rc) {
+	case HASHTABLE_SUCCESS:
+		old = buffval.addr;
+		refcount = atomic_inc_int32_t(&old->cr_refcount);
+		if (refcount == 1) {
+			/* This record is in the process of getting freed.
+			 * Delete from the hash table and pretend as
+			 * though we didn't find it!
+			 */
+			(void)atomic_dec_int32_t(&old->cr_refcount);
+			hashtable_deletelatched(ht_client_record, &buffkey,
+						&latch, NULL, NULL);
+			break;
+		}
+
+		/* Use the existing record */
 		hashtable_releaselatched(ht_client_record, &latch);
-		return record;
-	}
+		gsh_free(record);
+		return old;
 
-	/* Any other result other than no such key is an error */
-	if (rc != HASHTABLE_ERROR_NO_SUCH_KEY) {
-		/* Discard the key we created and return.  Directly
-		 * free since we didn't complete initialization.
-		 */
+	case HASHTABLE_ERROR_NO_SUCH_KEY:
+		break;
 
+	default:
 		LogFatal(COMPONENT_CLIENTID,
 			 "Client record hash table corrupt.");
-		gsh_free(record);
-		return NULL;
 	}
 
+	/* Initialize and insert the new record */
 	PTHREAD_MUTEX_init(&record->cr_mutex, NULL);
-
-	/* Use same record for record and key */
 	buffval.addr = record;
 	buffval.len = sizeof(nfs_client_record_t) + len;
 
@@ -1704,8 +1726,6 @@ nfs_client_record_t *get_client_record(const char *const value,
 	if (rc != HASHTABLE_SUCCESS) {
 		LogFatal(COMPONENT_CLIENTID,
 			 "Client record hash table corrupt.");
-		free_client_record(record);
-		return NULL;
 	}
 
 	return record;
@@ -1727,8 +1747,7 @@ static void client_cb(struct fridgethr_context *ctx)
 	cb_arg = ctx->arg;
 	cb_arg->cb(cb_arg->pclientid, cb_arg->state);
 	dec_client_id_ref(cb_arg->pclientid);
-	if (cb_arg->state)
-		gsh_free(cb_arg->state);
+	gsh_free(cb_arg->state);
 	gsh_free(cb_arg);
 }
 

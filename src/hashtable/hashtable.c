@@ -169,9 +169,9 @@ key_locate(struct hash_table *ht, const struct gsh_buffdesc *key,
 			     cache_offsetof(ht, rbthash));
 		if (cursor) {
 			data = RBT_OPAQ(cursor);
-			if (ht->parameter.
-			    compare_key((struct gsh_buffdesc *)key,
-					&(data->key)) == 0) {
+			if (ht->parameter.compare_key(
+						(struct gsh_buffdesc *)key,
+						&(data->key)) == 0) {
 				goto out;
 			}
 		}
@@ -194,13 +194,12 @@ key_locate(struct hash_table *ht, const struct gsh_buffdesc *key,
 
 	while ((cursor != NULL) && (RBT_VALUE(cursor) == rbthash)) {
 		data = RBT_OPAQ(cursor);
-		if (ht->parameter.
-		    compare_key((struct gsh_buffdesc *)key,
-				&(data->key)) == 0) {
+		if (ht->parameter.compare_key((struct gsh_buffdesc *)key,
+					      &(data->key)) == 0) {
 			if (partition->cache) {
 				void **cache_slot = (void **)
-				    &(partition->
-				      cache[cache_offsetof(ht, rbthash)]);
+				    &partition->cache[cache_offsetof(ht,
+								     rbthash)];
 				atomic_store_voidptr(cache_slot, cursor);
 			}
 			found = true;
@@ -407,6 +406,43 @@ hashtable_destroy(struct hash_table *ht,
 
  out:
 	return hrc;
+}
+
+/**
+ * @brief acquire the partition lock for the given key
+ *
+ * This function acquires the partition write mode lock corresponding to
+ * the given key.
+ *
+ * @brief[in]  ht        The hash table to search
+ * @brief[in]  key       The key for which to acquire the partition lock
+ * @brief[out] latch     Opaque structure holding partition information
+ *
+ * @retval HASHTABLE_SUCCESS, the partition lock is acquired.
+ * @retval Others, failure, the partition lock is not acquired
+ *
+ * NOTES: fast path if the caller just needs to lock the partition and
+ * doesn't need to look for the entry. The lock needs to be released
+ * with hashtable_releaselatched()
+ */
+hash_error_t
+hashtable_acquire_latch(struct hash_table *ht,
+			const struct gsh_buffdesc *key,
+			struct hash_latch *latch)
+{
+	uint32_t index;
+	uint64_t rbt_hash;
+	hash_error_t rc = HASHTABLE_SUCCESS;
+
+	memset(latch, 0, sizeof(struct hash_latch));
+	rc = compute(ht, key, &index, &rbt_hash);
+	if (rc != HASHTABLE_SUCCESS)
+		return rc;
+
+	latch->index = index;
+	PTHREAD_RWLOCK_wrlock(&(ht->partitions[index].lock));
+
+	return HASHTABLE_SUCCESS;
 }
 
 /**
@@ -748,8 +784,7 @@ void hashtable_deletelatched(struct hash_table *ht,
 			struct hash_data *data1 = RBT_OPAQ(cnode);
 			struct hash_data *data2 = RBT_OPAQ(latch->locator);
 
-			if (ht->parameter.
-			    compare_key(&(data1->key), &(data2->key))
+			if (ht->parameter.compare_key(&data1->key, &data2->key)
 			    == 0) {
 				LogFullDebug(COMPONENT_HASHTABLE_CACHE,
 					     "hash clear index %d slot %" PRIu64
@@ -834,8 +869,8 @@ hashtable_delall(struct hash_table *ht,
 			rc = free_func(key, val);
 
 			if (rc == 0) {
-				PTHREAD_RWLOCK_unlock(&ht->partitions[index].
-						      lock);
+				PTHREAD_RWLOCK_unlock(
+						&ht->partitions[index].lock);
 				return HASHTABLE_ERROR_DELALL_FAIL;
 			}
 		}

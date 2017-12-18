@@ -116,12 +116,12 @@ extern pool_t *nfs41_session_pool;
 extern hash_table_t *ht_session_id;
 
 /**
- * @brief Number of forechannel slots in a session
+ * @brief Default number of forechannel slots in a session
  *
  * This is also the maximum number of backchannel slots we'll use,
  * even if the client offers more.
  */
-#define NFS41_NB_SLOTS 3
+#define NFS41_NB_SLOTS_DEF 64
 
 /**
  * @brief Members in the slot table
@@ -159,23 +159,13 @@ enum {
 
 struct nfs41_session {
 	char session_id[NFS4_SESSIONID_SIZE];	/*< Session ID */
-	int32_t refcount;
-	clientid4 clientid;	/*< Clientid owning this session */
-	nfs_client_id_t *clientid_record;	/*< Client record
-						   correspinding to ID */
 	struct glist_head session_link;	/*< Link in the list of
 					   sessions for this
 					   clientid */
-	uint32_t flags;		/*< Flags pertaining to this session */
-	SVCXPRT *xprt;		/*< Referenced pointer to transport */
 
 	channel_attrs4 fore_channel_attrs;	/*< Fore-channel attributes */
-	nfs41_session_slot_t slots[NFS41_NB_SLOTS];	/*< Slot table */
 
 	channel_attrs4 back_channel_attrs;	/*< Back-channel attributes */
-	nfs41_cb_session_slot_t cb_slots[NFS41_NB_SLOTS];	/*< Callback
-								   Slot table */
-	uint32_t cb_program;	/*< Callback program ID */
 	struct rpc_call_channel cb_chan;	/*< Back channel */
 	pthread_mutex_t cb_mutex;	/*< Protects the cb slot table,
 					   when searching for a free slot */
@@ -183,6 +173,17 @@ struct nfs41_session {
 				   wait if the slot table is full
 				   and on which we signal when we
 				   free an entry. */
+
+	SVCXPRT *xprt;		/*< Referenced pointer to transport */
+	nfs_client_id_t *clientid_record;	/*< Client record
+						   correspinding to ID */
+	clientid4 clientid;	/*< Clientid owning this session */
+	uint32_t cb_program;	/*< Callback program ID */
+	uint32_t flags;		/*< Flags pertaining to this session */
+	int32_t refcount;
+	uint32_t nb_slots;	/**< Number of slots in this session */
+	nfs41_session_slot_t *fc_slots;	/**< Forechannel slot table*/
+	nfs41_cb_session_slot_t *bc_slots;	/**< Backchannel slot table */
 };
 
 /**
@@ -216,6 +217,7 @@ typedef struct rdel_fh {
 typedef struct clid_entry {
 	struct glist_head cl_list;	/*< Link in the list */
 	struct glist_head cl_rfh_list;
+	bool cl_reclaim_complete;
 	char cl_name[PATH_MAX];	/*< Client name */
 } clid_entry_t;
 
@@ -312,7 +314,6 @@ enum deleg_state {
 
 struct state_deleg {
 	open_delegation_type4 sd_type;
-	time_t sd_grant_time;               /* time of successful delegation */
 	enum deleg_state sd_state;
 	struct cf_deleg_stats sd_clfile_stats;  /* client specific */
 };
@@ -657,10 +658,9 @@ struct nfs_client_id_t {
 	verifier4 cid_incoming_verifier; /*< Most recently supplied verifier */
 	time_t cid_last_renew;	/*< Time of last renewal */
 	nfs_clientid_confirm_state_t cid_confirmed; /*< Confirm/expire state */
+	bool cid_allow_reclaim;	/*< Can still reclaim state? */
 	nfs_client_cred_t cid_credential;	/*< Client credential */
-	int cid_allow_reclaim;	/*< Whether this client can still
-				   reclaim state */
-	char *cid_recov_dir;	/*< Recovery directory */
+	char *cid_recov_tag;	/*< Recovery tag */
 	nfs_client_record_t *cid_client_record;	/*< Record for managing
 						   confirmation and
 						   replacement */
@@ -691,10 +691,10 @@ struct nfs_client_id_t {
 	time_t first_path_down_resp_time;  /* Time when the server first sent
 					       NFS4ERR_CB_PATH_DOWN */
 	unsigned int cid_nb_session;	/*< Number of sessions stored */
+	uint32_t cid_create_session_sequence;	/*< Sequence number for session
+						   creation. */
 	CREATE_SESSION4res cid_create_session_slot; /*< Cached response to
 							  last CREATE_SESSION */
-	unsigned cid_create_session_sequence;	/*< Sequence number for session
-						   creation. */
 	state_owner_t cid_owner;	/*< Owner for per-client state */
 	int32_t cid_refcount;	/*< Reference count for lifecycle */
 	int cid_lease_reservations;	/*< Counted lease reservations, to spare
@@ -841,25 +841,6 @@ struct state_lock_entry_t {
 };
 
 /**
- * @brief The ref counted share reservation state.
- *
- * Each field represents the count of instances of that flag being present
- * in a v3 or v4 share reservation.
- *
- * There is a separate count of v4 deny write flags so that they can be
- * enforced against v3 writes (v3 deny writes can not be enforced against
- * v3 writes because there is no connection between the share reservation
- * and the write operation). v3 reads will always be allowed.
- */
-typedef struct sal_share__ {
-	unsigned int share_access_read;
-	unsigned int share_access_write;
-	unsigned int share_deny_read;
-	unsigned int share_deny_write;
-	unsigned int share_deny_write_v4; /**< Count of v4 share deny write */
-} sal_share_t;
-
-/**
  * @brief Stats for file-specific and client-file delegation heuristics
  */
 
@@ -892,9 +873,8 @@ struct state_file {
 	struct glist_head lock_list;
 	/** Pointers for NLM share list. Protected by state_lock */
 	struct glist_head nlm_share_list;
-	/** Share reservation state for this file. Protected by state_lock */
-	sal_share_t share_state;
-	bool write_delegated; /* true iff write delegated */
+	/** true iff write delegated */
+	bool write_delegated;
 	/** Delegation statistics. Protected by state_lock */
 	struct file_deleg_stats fdeleg_stats;
 	uint32_t anon_ops;   /* number of anonymous operations

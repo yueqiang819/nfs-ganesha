@@ -60,7 +60,6 @@ static struct fsal_staticfsinfo_t default_gpfs_info = {
 	.link_support = true,
 	.symlink_support = true,
 	.lock_support = true,
-	.lock_support_owner = true,
 	.lock_support_async_block = true,
 	.named_attr = true,
 	.unique_handles = true,
@@ -74,9 +73,10 @@ static struct fsal_staticfsinfo_t default_gpfs_info = {
 	.umask = 0,
 	.auth_exportpath_xdev = true,
 	.xattr_access_rights = 0,
-	.share_support = true,
-	.share_support_owner = false,
+	/* @todo Update lease handling to use new interfaces */
+#if 0
 	.delegations = FSAL_OPTION_FILE_READ_DELEG, /** not working with pNFS */
+#endif
 	.pnfs_mds = true,
 	.pnfs_ds = true,
 	.fsal_trace = true,
@@ -179,6 +179,7 @@ static fsal_status_t init_config(struct fsal_module *fsal_hdl,
 	    container_of(fsal_hdl, struct gpfs_fsal_module, fsal);
 	int rc;
 
+	(void) prepare_for_stats(fsal_hdl);
 	gpfs_me->fs_info = default_gpfs_info;  /** get a copy of the defaults */
 
 	(void) load_config_from_parse(config_struct, &gpfs_param,
@@ -227,17 +228,6 @@ static fsal_status_t init_config(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_INVAL, 0);
 }
 
-/**
- * @brief Indicate support for extended operations.
- *
- * @retval true if extended operations are supported.
- */
-
-bool gpfs_support_ex(struct fsal_obj_handle *obj)
-{
-	return true;
-}
-
 /** @fn MODULE_INIT void gpfs_init(void)
  *  @brief  Module initialization.
  *
@@ -258,9 +248,12 @@ MODULE_INIT void gpfs_init(void)
 	myself->m_ops.fsal_pnfs_ds_ops = pnfs_ds_ops_init;
 	myself->m_ops.create_export = gpfs_create_export;
 	myself->m_ops.init_config = init_config;
-	myself->m_ops.support_ex = gpfs_support_ex;
 	myself->m_ops.getdeviceinfo = getdeviceinfo;
 	myself->m_ops.fs_da_addr_size = fs_da_addr_size;
+#ifdef USE_DBUS
+	myself->m_ops.fsal_extract_stats = fsal_gpfs_extract_stats;
+#endif
+	myself->m_ops.fsal_reset_stats = fsal_gpfs_reset_stats;
 }
 
 /** @fn MODULE_FINI void gpfs_unload(void)

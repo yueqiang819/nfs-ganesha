@@ -209,6 +209,8 @@ void unchunk_dirent(mdcache_dir_entry_t *dirent)
 void mdcache_avl_remove(mdcache_entry_t *parent,
 			mdcache_dir_entry_t *dirent)
 {
+	struct dir_chunk *chunk = dirent->chunk;
+
 	if (dirent->flags & DIR_ENTRY_FLAG_DELETED) {
 		/* Remove from deleted names tree */
 		avltree_remove(&dirent->node_hk, &parent->fsobj.fsdir.avl.c);
@@ -229,6 +231,10 @@ void mdcache_avl_remove(mdcache_entry_t *parent,
 		mdcache_key_delete(&dirent->ckey);
 
 	gsh_free(dirent);
+
+	LogFullDebug(COMPONENT_CACHE_INODE,
+		"Just freed dirent %p from chunk %p parent %p",
+		dirent, chunk, (chunk) ? chunk->parent : NULL);
 }
 
 /**
@@ -335,6 +341,7 @@ mdcache_avl_insert_impl(mdcache_entry_t *entry, mdcache_dir_entry_t *v,
 int mdcache_avl_insert_ck(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
 {
 	struct avltree_node *node;
+
 	LogFullDebug(COMPONENT_CACHE_INODE,
 		     "Insert dirent %p for %s on entry=%p FSAL cookie=%"PRIx64,
 		     v, v->name, entry, v->ck);
@@ -388,6 +395,8 @@ int mdcache_avl_insert_ck(mdcache_entry_t *entry, mdcache_dir_entry_t *v)
  * @retval 0   Success
  * @retval -1  Hash collision after 2^65 attempts
  * @retval -2  Name collision
+ * @retval -3  Duplicate file name but different cookie
+ * @retval -4  FSAL cookie collision
  *
  **/
 int
@@ -450,6 +459,7 @@ again:
 						       &entry
 							   ->fsobj.fsdir.avl.t);
 					v2 = NULL;
+					code = -4;
 					goto out;
 				}
 			}
@@ -526,6 +536,7 @@ again:
 				v2->chunk = NULL;
 				v2->ck = 0;
 				v2 = NULL;
+				code = -4;
 			} else {
 				if (isFullDebug(COMPONENT_CACHE_INODE)) {
 					char str[LOG_BUFF_LEN] = "\0";
@@ -654,9 +665,10 @@ mdcache_avl_lookup_k(mdcache_entry_t *entry, uint64_t k, uint32_t flags,
 			 * resend the last one */
 			node = avltree_next(node);
 		if (!node) {
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "seek to cookie=%" PRIu64
-				     " fail (no next entry)", k);
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"seek to cookie=%" PRIu64
+					" fail (no next entry)", k);
 			return MDCACHE_AVL_LAST;
 		}
 	}
@@ -674,8 +686,8 @@ mdcache_avl_lookup_k(mdcache_entry_t *entry, uint64_t k, uint32_t flags,
 			if (!node)
 				return MDCACHE_AVL_DELETED;
 		}
-		LogDebug(COMPONENT_NFS_READDIR,
-			 "node %p found deleted supremum %p", node2, node);
+		LogDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
+			    "node %p found deleted supremum %p", node2, node);
 	}
 
 done:

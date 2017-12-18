@@ -64,7 +64,6 @@ static struct fsal_staticfsinfo_t default_mem_info = {
 	.link_support = true,
 	.symlink_support = true,
 	.lock_support = true,
-	.lock_support_owner = true,
 	.lock_support_async_block = false,
 	.named_attr = false,
 	.unique_handles = true,
@@ -158,17 +157,6 @@ static fsal_status_t mem_init_config(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-/**
- * @brief Indicate support for extended operations.
- *
- * @retval true if extended operations are supported.
- */
-
-bool mem_support_ex(struct fsal_obj_handle *obj)
-{
-	return true;
-}
-
 /* Module initialization.
  * Called by dlopen() to register the module
  * keep a private pointer to me in myself
@@ -200,7 +188,6 @@ MODULE_INIT void init(void)
 	}
 	myself->m_ops.create_export = mem_create_export;
 	myself->m_ops.init_config = mem_init_config;
-	myself->m_ops.support_ex = mem_support_ex;
 	glist_init(&MEM.mem_exports);
 	MEM.next_inode = 0xc0ffee;
 }

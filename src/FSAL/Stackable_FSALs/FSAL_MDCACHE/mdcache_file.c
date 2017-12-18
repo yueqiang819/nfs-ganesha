@@ -64,232 +64,6 @@ mdc_set_time_current(struct timespec *time)
 }
 
 /**
- * @brief Open a file
- *
- * Delegate to sub-FSAL, subject to hard limits on the number of open FDs
- *
- * @param[in] obj_hdl	File to open
- * @param[in] openflags	Type of open to do
- * @return FSAL status
- */
-fsal_status_t mdcache_open(struct fsal_obj_handle *obj_hdl,
-			   fsal_openflags_t openflags)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	if (!mdcache_lru_fds_available()) {
-		/* This seems the best idea, let the client try again later
-		   after the reap. */
-		return fsalstat(ERR_FSAL_DELAY, 0);
-	}
-
-	subcall(
-		status = entry->sub_handle->obj_ops.open(
-			entry->sub_handle, openflags)
-	       );
-
-	if (FSAL_IS_ERROR(status) && (status.major == ERR_FSAL_STALE))
-		mdcache_kill_entry(entry);
-
-	return status;
-}
-
-/**
- * @brief Re-open a file with different flags
- *
- * Delegate to sub-FSAL.  This should not be called unless the sub-FSAL supports
- * reopen.
- *
- * @param[in] obj_hdl	File to re-open
- * @param[in] openflags	New open flags
- * @return FSAL status
- */
-fsal_status_t mdcache_reopen(struct fsal_obj_handle *obj_hdl,
-			   fsal_openflags_t openflags)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.reopen(
-			entry->sub_handle, openflags)
-	       );
-
-	if (FSAL_IS_ERROR(status) && (status.major == ERR_FSAL_STALE))
-		mdcache_kill_entry(entry);
-
-	return status;
-}
-
-/**
- * @brief Get the open status of a file
- *
- * Delegate to sub-FSAL, since this isn't cached metadata currently
- *
- * @param[in] obj_hdl	Object to check
- * @return Open flags indicating state
- */
-fsal_openflags_t mdcache_status(struct fsal_obj_handle *obj_hdl)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_openflags_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.status(
-			entry->sub_handle)
-	       );
-
-	return status;
-}
-
-/**
- * @brief Read from a file
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	Object to read from
- * @param[in] offset	Offset into file
- * @param[in] buf_size	Size of read buffer
- * @param[out] buffer	Buffer to read into
- * @param[out] read_amount	Amount read in bytes
- * @param[out] eof	true if End of File was hit
- * @return FSAL status
- */
-fsal_status_t mdcache_read(struct fsal_obj_handle *obj_hdl, uint64_t offset,
-			   size_t buf_size, void *buffer,
-			   size_t *read_amount, bool *eof)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.read(
-			entry->sub_handle, offset, buf_size, buffer,
-			read_amount, eof)
-	       );
-
-	if (!FSAL_IS_ERROR(status))
-		mdc_set_time_current(&entry->attrs.atime);
-	else if (status.major == ERR_FSAL_DELAY)
-		mdcache_kill_entry(entry);
-
-	return status;
-}
-
-/**
- * @brief Read from a file w/ extra info
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	Object to read from
- * @param[in] offset	Offset into file
- * @param[in] buf_size	Size of read buffer
- * @param[out] buffer	Buffer to read into
- * @param[out] read_amount	Amount read in bytes
- * @param[out] eof	true if End of File was hit
- * @param[in,out] info	Extra info about read data
- * @return FSAL status
- */
-fsal_status_t mdcache_read_plus(struct fsal_obj_handle *obj_hdl,
-				uint64_t offset, size_t buf_size,
-				void *buffer, size_t *read_amount,
-				bool *eof, struct io_info *info)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.read_plus(
-			entry->sub_handle, offset, buf_size, buffer,
-			read_amount, eof, info)
-	       );
-
-	if (!FSAL_IS_ERROR(status))
-		mdc_set_time_current(&entry->attrs.atime);
-	else if (status.major == ERR_FSAL_DELAY)
-		mdcache_kill_entry(entry);
-
-	return status;
-}
-
-/**
- * @brief Write to a file
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	Object to write to
- * @param[in] offset	Offset into file
- * @param[in] buf_size	Size of write buffer
- * @param[in] buffer	Buffer to write from
- * @param[out] write_amount	Amount written in bytes
- * @param[out] fsal_stable	true if write was to stable storage
- * @return FSAL status
- */
-fsal_status_t mdcache_write(struct fsal_obj_handle *obj_hdl, uint64_t offset,
-			    size_t buf_size, void *buffer,
-			    size_t *write_amount, bool *fsal_stable)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.write(
-			entry->sub_handle, offset, buf_size, buffer,
-			write_amount, fsal_stable)
-	       );
-
-	if (status.major == ERR_FSAL_DELAY)
-		mdcache_kill_entry(entry);
-	else if (!FSAL_IS_ERROR(status))
-		atomic_clear_uint32_t_bits(&entry->mde_flags,
-					MDCACHE_TRUST_ATTRS);
-
-	return status;
-}
-
-/**
- * @brief Write to a file w/ extra info
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	Object to read from
- * @param[in] offset	Offset into file
- * @param[in] buf_size	Size of read buffer
- * @param[out] buffer	Buffer to read into
- * @param[out] read_amount	Amount read in bytes
- * @param[out] eof	true if End of File was hit
- * @param[in,out] info	Extra info about write data
- * @return FSAL status
- */
-fsal_status_t mdcache_write_plus(struct fsal_obj_handle *obj_hdl,
-				 uint64_t offset, size_t buf_size,
-				 void *buffer, size_t *write_amount,
-				 bool *fsal_stable, struct io_info *info)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.write_plus(
-			entry->sub_handle, offset, buf_size, buffer,
-			write_amount, fsal_stable, info)
-	       );
-
-	if (status.major == ERR_FSAL_DELAY)
-		mdcache_kill_entry(entry);
-
-	return status;
-}
-
-/**
  * @brief Seek to data or hole
  *
  * Delegate to sub-FSAL
@@ -340,92 +114,6 @@ fsal_status_t mdcache_io_advise(struct fsal_obj_handle *obj_hdl,
 }
 
 /**
- * @brief Commit to a file
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	Object to commit
- * @param[in] offset	Offset into file
- * @param[in] len	Length of commit
- * @return FSAL status
- */
-fsal_status_t mdcache_commit(struct fsal_obj_handle *obj_hdl, off_t offset,
-			     size_t len)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.commit(
-			entry->sub_handle, offset, len)
-	       );
-
-	if (status.major == ERR_FSAL_STALE)
-		mdcache_kill_entry(entry);
-	else
-		atomic_clear_uint32_t_bits(&entry->mde_flags,
-					   MDCACHE_TRUST_ATTRS);
-
-	return status;
-}
-
-/**
- * @brief Lock/unlock a range in a file
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	File to lock
- * @param[in] p_owner	Private data for lock
- * @param[in] lock_op	Lock operation
- * @param[in] req_lock	Parameters for requested lock
- * @param[in] conflicting_lock	Description of existing conflicting lock
- * @return FSAL status
- */
-fsal_status_t mdcache_lock_op(struct fsal_obj_handle *obj_hdl,
-			      void *p_owner, fsal_lock_op_t lock_op,
-			      fsal_lock_param_t *req_lock,
-			      fsal_lock_param_t *conflicting_lock)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.lock_op(
-			entry->sub_handle, p_owner, lock_op, req_lock,
-			conflicting_lock)
-	       );
-
-	return status;
-}
-
-/**
- * @brief Handle a share request
- *
- * Delegate to sub-FSAL
- *
- * @param[in] obj_hdl	File to share
- * @param[in] p_owner	Private data for share
- * @param[in] param	Share request parameters
- * @return FSAL status
- */
-fsal_status_t mdcache_share_op(struct fsal_obj_handle *obj_hdl, void *p_owner,
-			       fsal_share_param_t param)
-{
-	mdcache_entry_t *entry =
-		container_of(obj_hdl, mdcache_entry_t, obj_handle);
-	fsal_status_t status;
-
-	subcall(
-		status = entry->sub_handle->obj_ops.share_op(
-			entry->sub_handle, p_owner, param)
-	       );
-
-	return status;
-}
-
-/**
  * @brief Close a file
  *
  * @param[in] obj_hdl	File to close
@@ -451,6 +139,7 @@ static fsal_status_t mdc_open2_by_name(mdcache_entry_t *mdc_parent,
 				       enum fsal_create_mode createmode,
 				       const char *name,
 				       struct attrlist *attrib_set,
+				       struct attrlist *attrs_out,
 				       fsal_verifier_t verifier,
 				       mdcache_entry_t **new_entry,
 				       bool *caller_perm_check)
@@ -498,7 +187,7 @@ static fsal_status_t mdc_open2_by_name(mdcache_entry_t *mdc_parent,
 		status = entry->sub_handle->obj_ops.open2(
 			entry->sub_handle, state, openflags, createmode,
 			NULL, attrib_set, verifier, &sub_handle,
-			NULL, caller_perm_check)
+			attrs_out, caller_perm_check)
 	       );
 
 	if (FSAL_IS_ERROR(status)) {
@@ -507,17 +196,51 @@ static fsal_status_t mdc_open2_by_name(mdcache_entry_t *mdc_parent,
 			     "Open failed %s",
 			     msg_fsal_err(status.major));
 		mdcache_put(entry);
-	} else {
-		LogFullDebug(COMPONENT_CACHE_INODE,
-			     "Opened entry %p, sub_handle %p",
-			     entry, entry->sub_handle);
-		if (openflags & FSAL_O_TRUNC) {
-			/* Invalidate the attributes since we just truncated. */
-			atomic_clear_uint32_t_bits(&entry->mde_flags,
-						   MDCACHE_TRUST_ATTRS);
-		}
-		*new_entry = entry;
+		return status;
 	}
+
+	LogFullDebug(COMPONENT_CACHE_INODE,
+		     "Opened entry %p, sub_handle %p",
+		     entry, entry->sub_handle);
+
+	if (openflags & FSAL_O_TRUNC) {
+		/* Invalidate the attributes since we just truncated. */
+		atomic_clear_uint32_t_bits(&entry->mde_flags,
+					   MDCACHE_TRUST_ATTRS);
+	}
+
+	if (attrs_out) {
+		/* Handle attribute request */
+		if (!(attrs_out->valid_mask & ATTR_RDATTR_ERR)) {
+			struct attrlist attrs;
+
+			/* open2() gave us attributes.  Update the cache */
+			fsal_prepare_attrs(
+				&attrs,
+				op_ctx->fsal_export->exp_ops.fs_supported_attrs(
+					op_ctx->fsal_export) | ATTR_RDATTR_ERR);
+			fsal_copy_attrs(&attrs, attrs_out, false);
+
+			PTHREAD_RWLOCK_wrlock(&entry->attr_lock);
+			mdc_update_attr_cache(entry, &attrs);
+			PTHREAD_RWLOCK_unlock(&entry->attr_lock);
+
+			/* mdc_update_attr_cache() consumes attrs; the release
+			 * is here only for code inspection. */
+			fsal_release_attrs(&attrs);
+		} else if (attrs_out->request_mask & ATTR_RDATTR_ERR) {
+			/* We didn't get attributes from open2, but the caller
+			 * wants them.  Try a full getattrs() */
+			status = entry->obj_handle.obj_ops.getattrs(
+					    &entry->obj_handle, attrs_out);
+			if (FSAL_IS_ERROR(status)) {
+				LogFullDebug(COMPONENT_CACHE_INODE,
+					     "getattrs failed status=%s",
+					     fsal_err_txt(status));
+			}
+		}
+	}
+	*new_entry = entry;
 
 	return status;
 }
@@ -625,21 +348,12 @@ fsal_status_t mdcache_open2(struct fsal_obj_handle *obj_hdl,
 		 */
 		status = mdc_open2_by_name(mdc_parent, state, openflags,
 					   createmode, name, attrs_in,
-					   verifier, &new_entry,
+					   attrs_out, verifier, &new_entry,
 					   caller_perm_check);
 
 		if (status.major == ERR_FSAL_NO_ERROR) {
 			/* Return the newly opened file. */
 			*new_obj = &new_entry->obj_handle;
-
-			if (openflags & FSAL_O_TRUNC) {
-				/* Mark the attributes as not-trusted, so we
-				 * will refresh the attributes on the next
-				 * getattrs.
-				 */
-				atomic_clear_uint32_t_bits(
-				    &new_entry->mde_flags, MDCACHE_TRUST_ATTRS);
-			}
 
 			return status;
 		}
@@ -658,8 +372,8 @@ fsal_status_t mdcache_open2(struct fsal_obj_handle *obj_hdl,
 	 * attributes.
 	 */
 	fsal_prepare_attrs(&attrs,
-			   (op_ctx->fsal_export->exp_ops.
-				   fs_supported_attrs(op_ctx->fsal_export)
+			   (op_ctx->fsal_export->exp_ops.fs_supported_attrs(
+							op_ctx->fsal_export)
 				& ~ATTR_ACL) | ATTR_RDATTR_ERR);
 
 	subcall(
@@ -1019,6 +733,34 @@ fsal_status_t mdcache_lock_op2(struct fsal_obj_handle *obj_hdl,
 		status = entry->sub_handle->obj_ops.lock_op2(
 			entry->sub_handle, state, p_owner, lock_op, req_lock,
 			conflicting_lock)
+	       );
+
+	return status;
+}
+
+/**
+ * @brief Get/Release delegation for a file (new style)
+ *
+ * Delegate to sub-FSAL
+ *
+ * @param[in] obj_hdl	Object owning state
+ * @param[in] state	Open file state to get/release
+ * @param[in] p_owner	Private owner
+ * @param[in] deleg	Delegation operation
+ * @return FSAL status
+ */
+fsal_status_t mdcache_lease_op2(struct fsal_obj_handle *obj_hdl,
+				struct state_t *state,
+				void *p_owner,
+				fsal_deleg_t deleg)
+{
+	mdcache_entry_t *entry =
+		container_of(obj_hdl, mdcache_entry_t, obj_handle);
+	fsal_status_t status;
+
+	subcall(
+		status = entry->sub_handle->obj_ops.lease_op2(
+			entry->sub_handle, state, p_owner, deleg);
 	       );
 
 	return status;

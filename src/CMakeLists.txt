@@ -17,7 +17,7 @@ set(CMAKE_MODULE_PATH ${CMAKE_MODULE_PATH} "${CMAKE_SOURCE_DIR}/cmake/modules/")
 project(nfs-ganesha C CXX)
 # Project versioning
 set(GANESHA_MAJOR_VERSION 2)
-set(GANESHA_MINOR_VERSION 5)
+set(GANESHA_MINOR_VERSION 6)
 
 IF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
 set(GANESHA_BUILD_RELEASE 2)
@@ -39,12 +39,13 @@ ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQU
 # Patch level is always ".0" for mainline (master).  It is blank for development.
 # When starting a stable maintenance branch, this becomes ".N"
 # where N is monotonically increasing starting at 1. Remember to include the "." !!
-set(GANESHA_PATCH_LEVEL .2)
+set(GANESHA_PATCH_LEVEL )
+
 
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
 # If used, it is always of the form "-whateveryouwant"
-set(GANESHA_EXTRA_VERSION )
+set(GANESHA_EXTRA_VERSION -dev.21)
 
 set(GANESHA_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL}${GANESHA_EXTRA_VERSION})
 set(GANESHA_BASE_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL})
@@ -83,8 +84,16 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
      set(DISTRO "SLES")
      set(LIBEXECDIR "/usr/lib")
   elseif( ${SYS_RELEASE} MATCHES "openSUSE Leap" )
-     message( STATUS "Detected a Linux openSUSE machine" )
+     message( STATUS "Detected a Linux openSUSE Leap machine" )
      set(DISTRO "SLES")
+     set(LIBEXECDIR "/usr/lib")
+  elseif( ${SYS_RELEASE} MATCHES "openSUSE Tumbleweed" )
+     message( STATUS "Detected a Linux openSUSE Tumbleweed machine" )
+     set(DISTRO "SLES")
+     set(LIBEXECDIR "/usr/lib")
+  elseif( (${SYS_RELEASE} MATCHES "Debian GNU/Linux") OR (${SYS_RELEASE} MATCHES "Ubuntu") )
+     message( STATUS "Detected a Linux Debian base machine" )
+     set(DISTRO "DEBIAN")
      set(LIBEXECDIR "/usr/lib")
   else( ${SYS_RELEASE} MATCHES "Red Hat" )
      message( STATUS "Detected an UNKNOWN Linux machine" )
@@ -144,17 +153,6 @@ ENDIF( EXISTS ${CMAKE_SOURCE_DIR}/../.git/HEAD  )
 
 STRING(SUBSTRING ${_GIT_HEAD_COMMIT} 0  7 _GIT_HEAD_COMMIT_ABBREV )
 
-# Using git related information, build PACKNAME
-set( PACKNAME "${GANESHA_VERSION}" )
-
-# Define CPACK component (to deal with sub packages)
-set(CPACK_COMPONENTS_ALL daemon fsal headers )
-set(CPACK_COMPONENT_DAEMON_DISPLAY_NAME "NFS-Ganesha daemon")
-
-# Include custom config and cpack module
-include(${CMAKE_SOURCE_DIR}/cmake/cpack_config.cmake)
-include(CPack)
-
 if (FREEBSD)
 #default gcc doesn't like using -Wuninitialized without -O on FreeBSD
     set(PLATFORM "FREEBSD")
@@ -193,6 +191,26 @@ ELSE()
     set( FSAL_DESTINATION "${LIB_INSTALL_DIR}/ganesha")
 ENDIF()
 
+if (CMAKE_SYSTEM_PROCESSOR MATCHES "unknown")
+  # uname -p is broken on this system.  Try uname -m
+  EXECUTE_PROCESS( COMMAND uname -m
+		   OUTPUT_STRIP_TRAILING_WHITESPACE
+		   ERROR_QUIET
+		   OUTPUT_VARIABLE ARCH)
+else (CMAKE_SYSTEM_PROCESSOR MATCHES "unknown")
+  set(ARCH ${CMAKE_SYSTEM_PROCESSOR})
+endif (CMAKE_SYSTEM_PROCESSOR MATCHES "unknown")
+
+if (ARCH MATCHES "x86_64")
+  # Nothing special to do for x86_64
+elseif (ARCH MATCHES "i386")
+  # Nothing special to do for i386
+elseif (ARCH MATCHES "mips")
+  set(SYSTEM_LIBRARIES "-latomic" ${SYSTEM_LIBRARIES})
+else()
+  message(WARNING "Unhandled architecture ${ARCH}")
+endif ()
+
 # FSAL selection
 # FSALs which are enabled by default but could be disabled
 # during the build
@@ -200,7 +218,6 @@ option(USE_FSAL_PROXY "build PROXY FSAL shared library" ON)
 option(USE_FSAL_VFS "build VFS FSAL shared library" ON)
 option(USE_FSAL_CEPH "build CEPH FSAL shared library" ON)
 option(USE_FSAL_GPFS "build GPFS FSAL" ON)
-option(USE_FSAL_ZFS "build ZFS FSAL" ON)
 option(USE_FSAL_XFS "build XFS support in VFS FSAL" ON)
 option(USE_FSAL_PANFS "build PanFS support in VFS FSAL" OFF)
 option(USE_FSAL_GLUSTER "build GLUSTER FSAL shared library" ON)
@@ -249,6 +266,21 @@ option(ENFORCE_GCC "enforce gcc as a the C compiler used for the project" OFF)
 
 # enable code profiling [-g -pg]
 option(PROFILING "turn on code profiling (-g and -pg)" OFF)
+
+# Define CPACK component (to deal with sub packages)
+set(CPACK_COMPONENTS_ALL daemon fsal headers )
+set(CPACK_COMPONENT_DAEMON_DISPLAY_NAME "NFS-Ganesha daemon")
+if (USE_SYSTEM_NTIRPC)
+  # Don't include libntirpc in the tarball
+  set(CPACK_SOURCE_IGNORE_FILES "libntirpc")
+else(USE_SYSTEM_NTIRPC)
+  # Don't include libntirpc's spec file; this can confuse rpmbuild
+  set(CPACK_SOURCE_IGNORE_FILES "libntirpc.spec$")
+endif(USE_SYSTEM_NTIRPC)
+
+# Include custom config and cpack module
+include(${CMAKE_SOURCE_DIR}/cmake/cpack_config.cmake)
+include(CPack)
 
 # MSPAC support -lwbclient link flag
 if( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_GREATER "2.6" )
@@ -336,6 +368,12 @@ option(USE_LTTNG "Enable LTTng tracing" OFF)
 # Build man page.
 option(USE_MAN_PAGE "Build MAN page" OFF) 
 
+# Enable Rados KV store for recovery
+option(USE_RADOS_RECOV "Enable Rados KV Recovery" ON)
+
+# Enable RADOS URL config file sections
+option(RADOS_URLS "Enable config file inclusion from RADOS objects" OFF)
+
 #
 # End build options
 #
@@ -371,19 +409,6 @@ IF(USE_FSAL_GLUSTER)
     LIST(APPEND CMAKE_REQUIRED_INCLUDES "${GLUSTER_PREFIX}/include")
   ELSE()
     set(GLUSTER_PREFIX "/usr" CACHE PATH "Path to Gluster installation")
-  ENDIF()
-ENDIF()
-
-IF(USE_FSAL_ZFS)
-  IF(ZFS_PREFIX)
-    set(ZFS_PREFIX ${ZFS_PREFIX} CACHE PATH "Path to ZFS installation")
-    LIST(APPEND CMAKE_PREFIX_PATH "${ZFS_PREFIX}")
-    LIST(APPEND CMAKE_LIBRARY_PATH "${ZFS_PREFIX}/lib")
-    LIST(APPEND CMAKE_LIBRARY_PATH "${ZFS_PREFIX}/local/lib")
-    LIST(APPEND CMAKE_LIBRARY_PATH "${ZFS_PREFIX}/local/lib64")
-    LIST(APPEND CMAKE_REQUIRED_INCLUDES "${ZFS_PREFIX}/include")
-  ELSE()
-    set(ZFS_PREFIX "" CACHE PATH "Path to ZFS installation")
   ENDIF()
 ENDIF()
 
@@ -543,7 +568,7 @@ if(USE_FSAL_GLUSTER)
   IF(GLUSTER_PREFIX)
     set(ENV{PKG_CONFIG_PATH} "${PKG_CONFIG_PATH}:${GLUSTER_PREFIX}/lib/pkgconfig")
   ENDIF(GLUSTER_PREFIX)
-  pkg_check_modules(GFAPI glusterfs-api>=7.3.8.6)
+  pkg_check_modules(GFAPI glusterfs-api>=7.3.10.7)
   if(NOT GFAPI_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT PACKAGE: Cannot find GLUSTER GFAPI runtime. Disabling GLUSTER fsal build")
@@ -554,6 +579,7 @@ if(USE_FSAL_GLUSTER)
   else(NOT GFAPI_FOUND)
     message(STATUS "GFAPI_INCLUDE_DIRS=${GFAPI_INCLUDE_DIRS}")
     message(STATUS "GFAPI_LIBRARY_DIRS=${GFAPI_LIBRARY_DIRS}")
+    message(STATUS "GFAPI_LIBDIR=${GFAPI_LIBDIR}")
     include_directories(${GFAPI_INCLUDE_DIRS})
     # missing directory not provided by current version of GlusterFS
     include_directories(${GFAPI_PREFIX}/include)
@@ -578,6 +604,28 @@ if(USE_FSAL_GLUSTER)
 	set(USE_FSAL_GLUSTER OFF)
 	message(STATUS "Could not find libacl, disabling GLUSTER fsal build")
     endif(HAVE_ACL_H)
+    check_library_exists(gfapi glfs_xreaddirplus_r ${GFAPI_LIBDIR} HAVE_XREADDIRPLUS)
+    if(HAVE_XREADDIRPLUS)
+        set(USE_GLUSTER_XREADDIRPLUS ON)
+    else()
+        set(USE_GLUSTER_XREADDIRPLUS OFF)
+        message(STATUS "Could not find glfs_xreaddirplus, switching to glfs_readdir_r")
+    endif(HAVE_XREADDIRPLUS)
+    check_library_exists(gfapi glfs_fd_set_lkowner ${GFAPI_LIBDIR} HAVE_LKOWNER)
+    if(HAVE_LKOWNER)
+	set(USE_LKOWNER ON)
+    else()
+	set(USE_LKOWNER OFF)
+	set(USE_FSAL_GLUSTER OFF)
+	message(STATUS "lkowner support is needed to enable GLUSTER build")
+    endif(HAVE_LKOWNER)
+    check_library_exists(gfapi glfs_upcall_register ${GFAPI_LIBDIR} HAVE_REGISTER_UPCALL)
+    if(HAVE_REGISTER_UPCALL)
+        set(USE_GLUSTER_UPCALL_REGISTER ON)
+    else()
+        set(USE_GLUSTER_UPCALL_REGISTER OFF)
+        message(STATUS "Could not find glfs_upcall_register, switching to glfs_h_poll_upcall")
+    endif(HAVE_REGISTER_UPCALL)
   endif(USE_FSAL_GLUSTER)
 endif(USE_FSAL_GLUSTER)
 
@@ -595,7 +643,7 @@ endif(USE_FSAL_CEPH)
 
 if(USE_FSAL_RGW)
   # require RGW w/API version 1.1.x
-  find_package(RGW 1.1.3)
+  find_package(RGW 1.1.6)
   if(NOT RGW_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT_PACKAGE : Cannot find RGW runtime.  Disabling RGW fsal build")
@@ -626,24 +674,6 @@ if(USE_FSAL_XFS)
     endif(STRICT_PACKAGE)
   endif((NOT HAVE_XFS_LIB) OR (NOT HAVE_XFS_H))
 endif(USE_FSAL_XFS)
-
-if(USE_FSAL_ZFS)
-  check_library_exists(
-    zfswrap
-    libzfswrap_init
-    ${ZFS_PREFIX}/lib
-    HAVE_ZFS_LIB
-    )
-  check_include_files("unistd.h;libzfswrap.h" HAVE_LIBZFSWRAP_H)
-  if((NOT HAVE_ZFS_LIB) OR (NOT HAVE_LIBZFSWRAP_H))
-   if(STRICT_PACKAGE)
-      message(FATAL_ERROR "STRICT_PACKAGE: Cannot find ZFS runtime. Disabling ZFS build")
-   else(STRICT_PACKAGE)
-      message(WARNING "Cannot find ZFS runtime. Disabling ZFS build")
-      set(USE_FSAL_ZFS OFF)
-    endif(STRICT_PACKAGE)
-  endif((NOT HAVE_ZFS_LIB) OR (NOT HAVE_LIBZFSWRAP_H))
-endif(USE_FSAL_ZFS)
 
 # sort out which allocator to use
 if(${ALLOCATOR} STREQUAL "jemalloc")
@@ -724,6 +754,19 @@ if(USE_LTTNG)
   endif(LTTNG_FOUND)
 endif(USE_LTTNG)
 
+if(USE_RADOS_RECOV OR RADOS_URLS)
+  find_package(RADOS)
+  if(NOT RADOS_FOUND)
+    if(STRICT_PACKAGE)
+      message(FATAL_ERROR "STRICT_PACKAGE : Rados libraries not found.")
+    else(STRICT_PACKAGE)
+      message(WARNING "Rados libraries not found.")
+      set(USE_RADOS_RECOV OFF)
+      set(RADOS_URLS OFF)
+    endif(STRICT_PACKAGE)
+  endif(NOT RADOS_FOUND)
+endif(USE_RADOS_RECOV OR RADOS_URLS)
+
 # Cmake 2.6 has issue in managing BISON and FLEX
 if( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_LESS "2.8" )
    message( status "CMake 2.6 detected, using portability hooks" )
@@ -753,6 +796,10 @@ if(USE_CB_SIMULATOR)
   set(_USE_CB_SIMULATOR ON)
 endif(USE_CB_SIMULATOR)
 
+########### add a "make dist" and a "make rpm"  ###############
+
+set( PKG_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}.tar.gz")
+add_custom_target(dist COMMAND ${CMAKE_MAKE_PROGRAM} package_source)
 
 # Find misc system libs
 find_library(LIBRT rt)  # extended Pthreads functions
@@ -890,7 +937,7 @@ if(USE_9P_RDMA)
   link_directories (${MOOSHIKA_LIBRARY_DIRS})
 endif(USE_9P_RDMA)
 
-set(NTIRPC_MIN_VERSION 1.5.3)
+set(NTIRPC_MIN_VERSION 1.6.0)
 if (USE_SYSTEM_NTIRPC)
   find_package(NTIRPC ${NTIRPC_MIN_VERSION} REQUIRED)
 else (USE_SYSTEM_NTIRPC)
@@ -969,6 +1016,7 @@ add_subdirectory(doc)
 message(STATUS)
 message(STATUS "-------------------------------------------------------")
 message(STATUS "PLATFORM = ${PLATFORM}")
+message(STATUS "ARCH = ${ARCH}")
 message(STATUS "VERSION = ${GANESHA_VERSION}")
 message(STATUS "BUILD HOST = ${BUILD_HOST_NAME}")
 message(STATUS "-------------------------------------------------------")
@@ -979,11 +1027,11 @@ message(STATUS "USE_FSAL_CEPH_MKNOD = ${USE_FSAL_CEPH_MKNOD}")
 message(STATUS "USE_FSAL_CEPH_SETLK = ${USE_FSAL_CEPH_SETLK}")
 message(STATUS "USE_FSAL_CEPH_LL_LOOKUP_ROOT = ${USE_FSAL_CEPH_LL_LOOKUP_ROOT}")
 message(STATUS "USE_FSAL_CEPH_STATX = ${USE_FSAL_CEPH_STATX}")
+message(STATUS "USE_FSAL_CEPH_LL_DELEGATION = ${USE_FSAL_CEPH_LL_DELEGATION}")
 message(STATUS "USE_FSAL_RGW = ${USE_FSAL_RGW}")
 message(STATUS "USE_FSAL_XFS = ${USE_FSAL_XFS}")
 message(STATUS "USE_FSAL_PANFS = ${USE_FSAL_PANFS}")
 message(STATUS "USE_FSAL_GPFS = ${USE_FSAL_GPFS}")
-message(STATUS "USE_FSAL_ZFS = ${USE_FSAL_ZFS}")
 message(STATUS "USE_FSAL_GLUSTER = ${USE_FSAL_GLUSTER}")
 message(STATUS "USE_FSAL_NULL = ${USE_FSAL_NULL}")
 message(STATUS "USE_FSAL_MEM = ${USE_FSAL_MEM}")
@@ -1025,7 +1073,6 @@ message(STATUS "KRB5_PREFIX = ${KRB5_PREFIX}")
 message(STATUS "CEPH_PREFIX = ${CEPH_PREFIX}")
 message(STATUS "RGW_PREFIX = ${RGW_PREFIX}")
 message(STATUS "GLUSTER_PREFIX = ${GLUSTER_PREFIX}")
-message(STATUS "ZFS_PREFIX = ${ZFS_PREFIX}")
 message(STATUS "CMAKE_PREFIX_PATH = ${CMAKE_PREFIX_PATH}")
 message(STATUS "_GIT_HEAD_COMMIT = ${_GIT_HEAD_COMMIT}")
 message(STATUS "_GIT_HEAD_COMMIT_ABBREV = ${_GIT_HEAD_COMMIT_ABBREV}")
@@ -1043,6 +1090,8 @@ message(STATUS "USE_BLKIN = ${USE_BLKIN}")
 message(STATUS "USE_VSOCK = ${USE_VSOCK}")
 message(STATUS "USE_TOOL_MULTILOCK = ${USE_TOOL_MULTILOCK}")
 message(STATUS "USE_MAN_PAGE = ${USE_MAN_PAGE}")
+message(STATUS "USE_RADOS_RECOV = ${USE_RADOS_RECOV}")
+message(STATUS "RADOS_URLS = ${RADOS_URLS}")
 
 #force command line options to be stored in cache
 set(USE_FSAL_VFS ${USE_FSAL_VFS}
@@ -1078,11 +1127,6 @@ set(USE_FSAL_PANFS ${USE_FSAL_PANFS}
 set(USE_FSAL_GPFS ${USE_FSAL_GPFS}
   CACHE BOOL
    "build GPFS FSAL"
-   FORCE)
-
-set(USE_FSAL_ZFS ${USE_FSAL_ZFS}
-  CACHE BOOL
-   "build ZFS FSAL"
    FORCE)
 
 set(USE_FSAL_GLUSTER ${USE_FSAL_GLUSTER}
@@ -1205,28 +1249,27 @@ set(_USE_NFS_RDMA ${USE_NFS_RDMA}
   "enable nfs RDMA in config"
   FORCE)
 
+set(USE_RADOS_RECOV ${USE_RADOS_RECOV}
+  CACHE BOOL
+  "enable rados recovery"
+  FORCE)
+
+set(RADOS_URLS ${RADOS_URLS}
+  CACHE BOOL
+  "enable rados url provider"
+  FORCE)
+
 # Now create a useable config.h
 configure_file(
   "${PROJECT_SOURCE_DIR}/include/config-h.in.cmake"
   "${PROJECT_BINARY_DIR}/include/config.h"
 )
 
-
-########### add a "make dist" and a "make rpm"  ###############
-
-set( PKG_NAME "${CPACK_PACKAGE_FILE_NAME}.tar.gz")
-add_custom_target(dist COMMAND ${CMAKE_MAKE_PROGRAM} package_source)
-
 # Tweak the "%bcond_<with|without> in the specfile for every
 # optional feature. Take care on the logic of this syntax
 # %bcond_with means you add a "--with" option, default is "without this feature"
 # %bcond_without adds a"--without" so the feature is enabled by default
 # This has to be coherent with chosen FSALs
-if(USE_FSAL_ZFS)
-    set(BCOND_ZFS "%bcond_without")
-else(USE_FSAL_ZFS)
-    set(BCOND_ZFS "%bcond_with")
-endif(USE_FSAL_ZFS)
 
 if(USE_FSAL_XFS)
     set(BCOND_XFS "%bcond_without")
@@ -1317,6 +1360,18 @@ if (USE_MAN_PAGE)
 else(USE_MAN_PAGE)
   set(BCOND_MAN_PAGE "%bcond_with")
 endif(USE_MAN_PAGE)
+
+if(USE_RADOS_RECOV)
+    set(BCOND_RADOS_RECOV "%bcond_without")
+else(USE_RADOS_RECOV)
+    set(BCOND_RADOS_RECOV "%bcond_with")
+endif(USE_RADOS_RECOV)
+
+if(RADOS_URLS)
+    set(BCOND_RADOS_URLS "%bcond_without")
+else(RADOS_URLS)
+    set(BCOND_RADOS_URLS "%bcond_with")
+endif(RADOS_URLS)
 
 # Now create a useable specfile
 configure_file(

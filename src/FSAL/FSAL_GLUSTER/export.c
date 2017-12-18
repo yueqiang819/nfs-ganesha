@@ -139,7 +139,7 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -245,7 +245,7 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -260,6 +260,63 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
  out:
 	if (status.major != ERR_FSAL_NO_ERROR)
 		gluster_cleanup_vars(glhandle);
+#ifdef GLTIMING
+	now(&e_time);
+	latency_update(&s_time, &e_time, lat_create_handle);
+#endif
+	return status;
+}
+
+/**
+ * @brief Given a glfs_object handle, construct handle for
+ * FSAL to use.
+ */
+
+fsal_status_t glfs2fsal_handle(struct glusterfs_export *glfs_export,
+			       struct glfs_object *glhandle,
+			       struct fsal_obj_handle **pub_handle,
+			       struct stat *sb,
+			       struct attrlist *attrs_out)
+{
+	int rc = 0;
+	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
+	unsigned char globjhdl[GFAPI_HANDLE_LENGTH] = {'\0'};
+	struct glusterfs_handle *objhandle = NULL;
+	char vol_uuid[GLAPI_UUID_LENGTH] = {'\0'};
+#ifdef GLTIMING
+	struct timespec s_time, e_time;
+
+	now(&s_time);
+#endif
+
+	*pub_handle = NULL;
+
+	if (!glfs_export || !glhandle) {
+		status.major = ERR_FSAL_INVAL;
+		goto out;
+	}
+
+	rc = glfs_h_extract_handle(glhandle, globjhdl, GFAPI_HANDLE_LENGTH);
+	if (rc < 0) {
+		status = gluster2fsal_error(errno);
+		goto out;
+	}
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+				 GLAPI_UUID_LENGTH);
+	if (rc < 0) {
+		status = gluster2fsal_error(errno);
+		goto out;
+	}
+
+	construct_handle(glfs_export, sb, glhandle, globjhdl,
+			 GLAPI_HANDLE_LENGTH, &objhandle, vol_uuid);
+
+	if (attrs_out != NULL) {
+		posix2fsal_attributes_all(sb, attrs_out);
+	}
+
+	*pub_handle = &objhandle->handle;
+ out:
 #ifdef GLTIMING
 	now(&e_time);
 	latency_update(&s_time, &e_time, lat_create_handle);
@@ -284,7 +341,7 @@ static fsal_status_t get_dynamic_info(struct fsal_export *exp_hdl,
 	rc = glfs_statvfs(glfs_export->gl_fs->fs, glfs_export->export_path,
 			  &vfssb);
 	if (rc != 0)
-		return gluster2fsal_error(rc);
+		return gluster2fsal_error(errno);
 
 	memset(infop, 0, sizeof(fsal_dynamicfsinfo_t));
 	infop->total_bytes = vfssb.f_frsize * vfssb.f_blocks;
@@ -305,8 +362,8 @@ static fsal_status_t get_dynamic_info(struct fsal_export *exp_hdl,
  * Note that this is not expected to fail since memory allocation is
  * expected to abort on failure.
  *
- * @param[in] exp_hdl               Export state_t will be associated with
- * @param[in] state_type            Type of state to allocate
+ * @param[in] exp_hdl	       Export state_t will be associated with
+ * @param[in] state_type	    Type of state to allocate
  * @param[in] related_state         Related state if appropriate
  *
  * @returns a state structure.
@@ -574,6 +631,8 @@ struct glexport_params {
 	char *glhostname;
 	char *glvolpath;
 	char *glfs_log;
+	uint64_t up_poll_usec;
+	bool enable_upcall;
 };
 
 static struct config_item export_params[] = {
@@ -586,6 +645,10 @@ static struct config_item export_params[] = {
 		      glexport_params, glvolpath),
 	CONF_ITEM_PATH("glfs_log", 1, MAXPATHLEN, GFAPI_LOG_LOCATION,
 		       glexport_params, glfs_log),
+	CONF_ITEM_UI64("up_poll_usec", 1, 60*1000*1000, 10,
+		       glexport_params, up_poll_usec),
+	CONF_ITEM_BOOL("enable_upcall", true, glexport_params,
+		       enable_upcall),
 	CONFIG_EOL
 };
 
@@ -607,7 +670,6 @@ void
 glusterfs_free_fs(struct glusterfs_fs *gl_fs)
 {
 	int64_t refcnt;
-	int *retval = NULL;
 	int err     = 0;
 
 	PTHREAD_MUTEX_lock(&GlusterFS.lock);
@@ -629,6 +691,14 @@ glusterfs_free_fs(struct glusterfs_fs *gl_fs)
 
 	atomic_inc_int8_t(&gl_fs->destroy_mode);
 
+	if (!gl_fs->enable_upcall)
+		goto skip_upcall;
+
+	/* Cancel upcall readiness if not yet done */
+	up_ready_cancel((struct fsal_up_vector *)gl_fs->up_ops);
+
+#ifndef USE_GLUSTER_UPCALL_REGISTER
+	int *retval = NULL;
 	/* Wait for up_thread to exit */
 	err = pthread_join(gl_fs->up_thread, (void **)&retval);
 
@@ -638,11 +708,22 @@ glusterfs_free_fs(struct glusterfs_fs *gl_fs)
 	}
 
 	if (err) {
-		LogCrit(COMPONENT_FSAL, "Up_thread join failed (%s)",
+		LogWarn(COMPONENT_FSAL, "Up_thread join failed (%s)",
 			strerror(err));
-		return;
 	}
+#else
+	err = glfs_upcall_unregister(gl_fs->fs, GLFS_EVENT_ANY);
 
+	if ((err < 0) || (!(err & GLFS_EVENT_INODE_INVALIDATE))) {
+		/* Or can we ignore the error like in case of single
+		 * node ganesha server. */
+		LogWarn(COMPONENT_FSAL,
+			"Unable to unregister for upcalls. Volume: %s",
+			gl_fs->volname);
+	}
+#endif
+
+skip_upcall:
 	/* Gluster and memory cleanup */
 	glfs_fini(gl_fs->fs);
 	gsh_free(gl_fs->volname);
@@ -673,12 +754,6 @@ glusterfs_get_fs(struct glexport_params params,
 	}
 
 	gl_fs = gsh_calloc(1, sizeof(struct glusterfs_fs));
-
-	if (!gl_fs) {
-		LogCrit(COMPONENT_FSAL,
-			"Unable to allocate memory for glusterfs_fs object");
-		goto out;
-	}
 
 	glist_init(&gl_fs->fs_obj);
 
@@ -717,8 +792,16 @@ glusterfs_get_fs(struct glexport_params params,
 	gl_fs->fs = fs;
 	gl_fs->volname = strdup(params.glvolname);
 	gl_fs->destroy_mode = 0;
+	gl_fs->up_poll_usec = params.up_poll_usec;
 
 	gl_fs->up_ops = up_ops;
+
+	gl_fs->enable_upcall = params.enable_upcall;
+
+	if (!gl_fs->enable_upcall)
+		goto skip_upcall;
+
+#ifndef USE_GLUSTER_UPCALL_REGISTER
 	rc = initiate_up_thread(gl_fs);
 	if (rc != 0) {
 		LogCrit(COMPONENT_FSAL,
@@ -726,7 +809,24 @@ glusterfs_get_fs(struct glexport_params params,
 			params.glvolname);
 		goto out;
 	}
+#else
+	/* We are mainly interested in INODE_INVALIDATE for now. Still
+	 * register for all the events
+	 */
+	rc = glfs_upcall_register(fs, GLFS_EVENT_ANY, gluster_process_upcall,
+				  gl_fs);
 
+	if ((rc < 0) || (!(rc & GLFS_EVENT_INODE_INVALIDATE))) {
+		/* Or can we ignore the error like in case of single
+		 * node ganesha server. */
+		LogCrit(COMPONENT_FSAL,
+			"Unable to register for upcalls. Volume: %s",
+			params.glvolname);
+		goto out;
+	}
+#endif
+
+skip_upcall:
 	glist_add(&GlusterFS.fs_obj, &gl_fs->fs_obj);
 
 found:
@@ -759,6 +859,7 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	int rc = 0;
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	struct glusterfs_export *glfsexport = NULL;
+	bool fsal_attached = false;
 	struct glexport_params params = {
 		.glvolname = NULL,
 		.glhostname = NULL,
@@ -767,6 +868,8 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 
 	LogDebug(COMPONENT_FSAL, "In args: export path = %s",
 		 op_ctx->ctx_export->fullpath);
+
+	glfsexport = gsh_calloc(1, sizeof(struct glusterfs_export));
 
 	rc = load_config_from_node(parse_node,
 				   &export_param,
@@ -782,8 +885,6 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	}
 	LogEvent(COMPONENT_FSAL, "Volume %s exported at : '%s'",
 		 params.glvolname, params.glvolpath);
-
-	glfsexport = gsh_calloc(1, sizeof(struct glusterfs_export));
 
 	fsal_export_init(&glfsexport->export);
 	export_ops_init(&glfsexport->export.exp_ops);
@@ -801,6 +902,7 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 			op_ctx->ctx_export->fullpath);
 		goto out;
 	}
+	fsal_attached = true;
 
 	glfsexport->mount_path = op_ctx->ctx_export->fullpath;
 	glfsexport->export_path = params.glvolpath;
@@ -816,8 +918,9 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	if (glfsexport->pnfs_ds_enabled) {
 		struct fsal_pnfs_ds *pds = NULL;
 
-		status = fsal_hdl->m_ops.
-				fsal_pnfs_ds(fsal_hdl, parse_node, &pds);
+		status =
+		    fsal_hdl->m_ops.fsal_pnfs_ds(fsal_hdl, parse_node, &pds);
+
 		if (status.major != ERR_FSAL_NO_ERROR)
 			goto out;
 
@@ -853,19 +956,19 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	glfsexport->export.up_ops = up_ops;
 
  out:
-	if (params.glvolname)
-		gsh_free(params.glvolname);
-	if (params.glhostname)
-		gsh_free(params.glhostname);
-	if (params.glfs_log)
-		gsh_free(params.glfs_log);
+	gsh_free(params.glvolname);
+	gsh_free(params.glhostname);
+	gsh_free(params.glfs_log);
 
 	if (status.major != ERR_FSAL_NO_ERROR) {
-		if (params.glvolpath)
-			gsh_free(params.glvolpath);
+		gsh_free(params.glvolpath);
 
-		if (glfsexport)
-			gsh_free(glfsexport);
+		if (fsal_attached)
+			fsal_detach_export(fsal_hdl,
+					   &glfsexport->export.exports);
+		if (glfsexport->gl_fs)
+			glusterfs_free_fs(glfsexport->gl_fs);
+		gsh_free(glfsexport);
 	}
 
 	return status;

@@ -529,10 +529,10 @@ void dec_nfs4_state_ref(struct state_t *state)
  * @param[in] other stateid4.other
  * @param[in] state The state to add
  *
- * @retval 1 if ok.
- * @retval 0 if not ok.
+ * @retval STATE_SUCCESS if able to insert the new state.
+ * @retval STATE_ENTRY_EXISTS if state is already there.
  */
-int nfs4_State_Set(state_t *state)
+state_status_t nfs4_State_Set(state_t *state)
 {
 	struct gsh_buffdesc buffkey;
 	struct gsh_buffdesc buffval;
@@ -549,17 +549,20 @@ int nfs4_State_Set(state_t *state)
 				     &buffval,
 				     HASHTABLE_SET_HOW_SET_NO_OVERWRITE);
 
-	if (err != HASHTABLE_SUCCESS) {
+	switch (err) {
+	case HASHTABLE_SUCCESS:
+		break;
+	default:
 		LogCrit(COMPONENT_STATE,
-			"hashtable_test_and_set failed %s for key %p",
+			"ht_state_id hashtable_test_and_set failed %s for key %p",
 			hash_table_err_to_str(err), buffkey.addr);
-		return 0;
+		return STATE_ENTRY_EXISTS; /* likely reason */
 	}
 
 	/* If stateid is a LOCK or SHARE state, we also index by entry/owner */
 	if (state->state_type != STATE_TYPE_LOCK &&
 	    state->state_type != STATE_TYPE_SHARE)
-		return 1;
+		return STATE_SUCCESS;
 
 	buffkey.addr = state;
 	buffkey.len = sizeof(state_t);
@@ -567,23 +570,19 @@ int nfs4_State_Set(state_t *state)
 	buffval.addr = state;
 	buffval.len = sizeof(state_t);
 
-	/*
-	 * Allow overwrite here because we can get a new state with the
-	 * same file+owner if a FREE STATEID call comes in concurrently.
-	 */
 	err = hashtable_test_and_set(ht_state_obj,
 				     &buffkey,
 				     &buffval,
-				     HASHTABLE_SET_HOW_SET_OVERWRITE);
+				     HASHTABLE_SET_HOW_SET_NO_OVERWRITE);
 
-	if (err != HASHTABLE_SUCCESS) {
-		struct gsh_buffdesc buffkey, old_key, old_value;
+	switch (err) {
+	case HASHTABLE_SUCCESS:
+		return STATE_SUCCESS;
 
-		buffkey.addr = state->stateid_other;
-		buffkey.len = OTHERSIZE;
-
+	case HASHTABLE_ERROR_KEY_ALREADY_EXISTS: /* buggy client? */
+	default: /* error case */
 		LogCrit(COMPONENT_STATE,
-			"hashtable_test_and_set failed %s for key %p",
+			"ht_state_obj hashtable_test_and_set failed %s for key %p",
 			hash_table_err_to_str(err), buffkey.addr);
 
 		if (isFullDebug(COMPONENT_STATE)) {
@@ -605,18 +604,17 @@ int nfs4_State_Set(state_t *state)
 			}
 		}
 
-		err = HashTable_Del(ht_state_id, &buffkey,
-				    &old_key, &old_value);
+		buffkey.addr = state->stateid_other;
+		buffkey.len = OTHERSIZE;
+		err = HashTable_Del(ht_state_id, &buffkey, NULL, NULL);
 
 		if (err != HASHTABLE_SUCCESS) {
-			LogDebug(COMPONENT_STATE,
+			LogCrit(COMPONENT_STATE,
 				 "Failure to delete stateid %s",
 				 hash_table_err_to_str(err));
 		}
-		return 0;
+		return STATE_ENTRY_EXISTS; /* likely reason */
 	}
-
-	return 1;
 }
 
 /**
@@ -820,13 +818,12 @@ nfsstat4 nfs4_Check_Stateid(stateid4 *stateid, struct fsal_obj_handle *fsal_obj,
 		str_valid = true;
 	}
 
-	LogFullDebug(COMPONENT_STATE, "Check %s stateid flags%s%s%s%s%s%s%s",
+	LogFullDebug(COMPONENT_STATE, "Check %s stateid flags%s%s%s%s%s%s",
 		     tag, flags & STATEID_SPECIAL_ALL_0 ? " ALL_0" : "",
 		     flags & STATEID_SPECIAL_ALL_1 ? " ALL_1" : "",
 		     flags & STATEID_SPECIAL_CURRENT ? " CURRENT" : "",
 		     flags & STATEID_SPECIAL_CLOSE_40 ? " CLOSE_40" : "",
 		     flags & STATEID_SPECIAL_CLOSE_41 ? " CLOSE_41" : "",
-		     flags & STATEID_SPECIAL_FREE ? " FREE" : "",
 		     flags == 0 ? " NONE" : "");
 
 	/* Test for OTHER is all zeros */
@@ -1146,42 +1143,6 @@ nfsstat4 nfs4_Check_Stateid(stateid4 *stateid, struct fsal_obj_handle *fsal_obj,
 					 tag, str,
 					 state2->state_seqid);
 			status = NFS4ERR_BAD_STATEID;
-			goto failure;
-		}
-	}
-
-	if ((flags & STATEID_SPECIAL_FREE) != 0) {
-		switch (state2->state_type) {
-			bool empty;
-		case STATE_TYPE_LOCK:
-			PTHREAD_RWLOCK_rdlock(&obj2->state_hdl->state_lock);
-			empty = glist_empty(
-				&state2->state_data.lock.state_locklist);
-			PTHREAD_RWLOCK_unlock(&obj2->state_hdl->state_lock);
-			if (empty) {
-				if (str_valid)
-					LogFullDebug(COMPONENT_STATE,
-						     "Check %s stateid %s has no locks, ok to free",
-						     tag, str);
-				break;
-			}
-			/* Fall through for failure */
-
-		case STATE_TYPE_NLM_LOCK:
-		case STATE_TYPE_NLM_SHARE:
-		case STATE_TYPE_9P_FID:
-			/* Fall through - don't expect these types */
-
-		case STATE_TYPE_NONE:
-		case STATE_TYPE_SHARE:
-		case STATE_TYPE_DELEG:
-		case STATE_TYPE_LAYOUT:
-			if (str_valid)
-				LogDebug(COMPONENT_STATE,
-					 "Check %s stateid found stateid %s with locks held",
-					 tag, str);
-
-			status = NFS4ERR_LOCKS_HELD;
 			goto failure;
 		}
 	}

@@ -257,11 +257,44 @@ static void mem_remove_dirent(struct mem_fsal_obj_handle *parent,
 }
 
 /**
+ * @brief Recursively clean all objs/dirents on an export
+ *
+ * @note Caller MUST hold export lock for write
+ *
+ * @param[in] root	Root to clean
+ * @return Return description
+ */
+void mem_clean_export(struct mem_fsal_obj_handle *root)
+{
+	struct mem_fsal_obj_handle *child;
+	struct avltree_node *node;
+	struct mem_dirent *dirent;
+
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_inuse, __func__, __LINE__, root,
+		   root->attrs.numlinks, root->is_export);
+#endif
+	while ((node = avltree_first(&root->mh_dir.avl_name))) {
+		dirent = avltree_container_of(node, struct mem_dirent, avl_n);
+
+		child = dirent->hdl;
+		if (child->obj_handle.type == DIRECTORY) {
+			mem_clean_export(child);
+		}
+
+		PTHREAD_RWLOCK_wrlock(&root->obj_handle.obj_lock);
+		mem_remove_dirent_locked(root, dirent, true);
+		PTHREAD_RWLOCK_unlock(&root->obj_handle.obj_lock);
+	}
+
+}
+
+/**
  * @brief Remove all children from a directory's tree
  *
  * @param[in] parent	Directroy to clean
  */
-void mem_clean_dir_tree(struct mem_fsal_obj_handle *parent)
+void mem_clean_all_dirents(struct mem_fsal_obj_handle *parent)
 {
 	struct avltree_node *node;
 	struct mem_dirent *dirent;
@@ -432,7 +465,10 @@ _mem_alloc_handle(struct mem_fsal_obj_handle *parent,
 	hdl->obj_handle.fileid = atomic_postinc_uint64_t(&mem_inode_number);
 	hdl->datasize = MEM.inode_size;
 	glist_init(&hdl->dirents);
+	PTHREAD_RWLOCK_wrlock(&mfe->mfe_exp_lock);
 	glist_add_tail(&mfe->mfe_objs, &hdl->mfo_exp_entry);
+	hdl->mfo_exp = mfe;
+	PTHREAD_RWLOCK_unlock(&mfe->mfe_exp_lock);
 	package_mem_handle(hdl);
 
 	/* Fills the output struct */
@@ -536,16 +572,20 @@ _mem_alloc_handle(struct mem_fsal_obj_handle *parent,
 	return hdl;
 }
 
-static fsal_status_t mem_int_lookup(struct mem_fsal_obj_handle *dir,
-				    const char *path,
-				    struct mem_fsal_obj_handle **entry)
+#define  mem_int_lookup(d, p, e) _mem_int_lookup(d, p, e, __func__, __LINE__)
+static fsal_status_t _mem_int_lookup(struct mem_fsal_obj_handle *dir,
+				     const char *path,
+				     struct mem_fsal_obj_handle **entry,
+				     const char *func, int line)
 {
-	struct mem_dirent key, *dirent;
-	struct avltree_node *node;
+	struct mem_dirent *dirent;
 
 	*entry = NULL;
 	LogFullDebug(COMPONENT_FSAL, "Lookup %s in %p", path, dir);
 
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_lookup, func, line, dir, path);
+#endif
 	if (strcmp(path, "..") == 0) {
 		/* lookup parent - lookupp */
 		if (dir->mh_dir.parent == NULL) {
@@ -562,14 +602,15 @@ static fsal_status_t mem_int_lookup(struct mem_fsal_obj_handle *dir,
 		return fsalstat(ERR_FSAL_NO_ERROR, 0);
 	}
 
-	key.d_name = (char *)path;
-	node = avltree_lookup(&key.avl_n, &dir->mh_dir.avl_name);
-	if (!node) {
+	dirent = mem_dirent_lookup(dir, path);
+	if (!dirent) {
 		return fsalstat(ERR_FSAL_NOENT, 0);
 	}
-	dirent = avltree_container_of(node, struct mem_dirent, avl_n);
 	*entry = dirent->hdl;
 
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_lookup, func, line, *entry, (*entry)->m_name);
+#endif
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -749,31 +790,6 @@ static fsal_status_t mem_readdir(struct fsal_obj_handle *dir_hdl,
 	PTHREAD_RWLOCK_unlock(&dir_hdl->obj_lock);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/**
- * @brief Create a file
- *
- * @param[in] dir_hdl	Handle of parent directory
- * @param[in] name	Name of file to create
- * @param[in] attrs_in	Attributes to set on new file
- * @param[out] new_obj	Newly created file
- * @param[out] attrs_out Attributes of newlys created object
- *
- * @return FSAL status
- */
-static fsal_status_t mem_create(struct fsal_obj_handle *dir_hdl,
-				    const char *name, struct attrlist *attrs_in,
-				    struct fsal_obj_handle **new_obj,
-				    struct attrlist *attrs_out)
-{
-	struct mem_fsal_obj_handle *parent =
-		container_of(dir_hdl, struct mem_fsal_obj_handle, obj_handle);
-
-	LogDebug(COMPONENT_FSAL, "create %s", name);
-
-	return mem_create_obj(parent, REGULAR_FILE, name, attrs_in, new_obj,
-			      attrs_out);
 }
 
 /**
@@ -1034,6 +1050,12 @@ fsal_status_t mem_link(struct fsal_obj_handle *obj_hdl,
 
 	myself->attrs.numlinks++;
 
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_link, __func__, __LINE__, dir,
+		   dir->m_name, myself, myself->m_name, name,
+		   myself->attrs.numlinks);
+#endif
+
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
@@ -1102,6 +1124,12 @@ static fsal_status_t mem_unlink(struct fsal_obj_handle *dir_hdl,
 
 unlock:
 	PTHREAD_RWLOCK_unlock(&dir_hdl->obj_lock);
+
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_unlink, __func__, __LINE__, parent,
+		   parent->m_name, myself, myself->m_name,
+		   myself->attrs.numlinks);
+#endif
 
 	return status;
 }
@@ -1282,14 +1310,14 @@ fsal_status_t mem_open2(struct fsal_obj_handle *obj_hdl,
 		tracepoint(fsalmem, mem_open, __func__, __LINE__, myself,
 			   myself->m_name, state, truncated, setattrs);
 #endif
+		/* Need a lock to protect the FD */
+		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
+
 		if (state != NULL) {
 			/* Prepare to take the share reservation, but only if we
 			 * are called with a valid state (if state is NULL the
 			 * caller is a stateless create such as NFS v3 CREATE).
 			 */
-
-			/* This can block over an I/O operation. */
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 
 			/* Check share reservation conflicts. */
 			status = check_share_conflict(&myself->mh_file.share,
@@ -1307,14 +1335,11 @@ fsal_status_t mem_open2(struct fsal_obj_handle *obj_hdl,
 			update_share_counters(&myself->mh_file.share,
 					      FSAL_O_CLOSED,
 					      openflags);
-
-			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 		} else {
 			/* We need to use the global fd to continue, and take
 			 * the lock to protect it.
 			 */
 			my_fd = &hdl->mh_file.fd;
-			PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
 		}
 
 		if (openflags & FSAL_O_WRITE)
@@ -1334,6 +1359,22 @@ fsal_status_t mem_open2(struct fsal_obj_handle *obj_hdl,
 			status = fsalstat(posix2fsal_error(EEXIST), EEXIST);
 		}
 
+		if (!FSAL_IS_ERROR(status)) {
+			/* Return success. */
+			PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
+			if (attrs_out != NULL)
+				/* Note, myself->attrs is usually protected by a
+				 * the attr_lock in MDCACHE.  It's not in this
+				 * case.  Since MEM is not a production FSAL,
+				 * this is deemed to be okay for the moment.
+				 */
+				fsal_copy_attrs(attrs_out, &myself->attrs,
+						false);
+			return status;
+		}
+
+		(void) mem_close_my_fd(my_fd);
+
 		if (state == NULL) {
 			/* If no state, release the lock taken above and return
 			 * status.
@@ -1342,28 +1383,17 @@ fsal_status_t mem_open2(struct fsal_obj_handle *obj_hdl,
 			return status;
 		}
 
-		if (!FSAL_IS_ERROR(status)) {
-			/* Return success. */
-			return status;
-		}
-
-		(void) mem_close_my_fd(my_fd);
-
-
 		/* Can only get here with state not NULL and an error */
 
 		/* On error we need to release our share reservation
 		 * and undo the update of the share counters.
 		 * This can block over an I/O operation.
 		 */
-		PTHREAD_RWLOCK_wrlock(&obj_hdl->obj_lock);
-
 		update_share_counters(&myself->mh_file.share,
 				      openflags,
 				      FSAL_O_CLOSED);
 
 		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
-
 		return status;
 	}
 
@@ -1549,6 +1579,7 @@ fsal_status_t mem_read2(struct fsal_obj_handle *obj_hdl,
 	struct fsal_fd *fsal_fd;
 	bool has_lock, closefd = false;
 	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	bool reusing_open_state_fd = false;
 
 	if (info != NULL) {
 		/* Currently we don't support READ_PLUS */
@@ -1559,7 +1590,8 @@ fsal_status_t mem_read2(struct fsal_obj_handle *obj_hdl,
 	status = fsal_find_fd(&fsal_fd, obj_hdl, &myself->mh_file.fd,
 			      &myself->mh_file.share, bypass, state,
 			      FSAL_O_READ, mem_open_func, mem_close_func,
-			      &has_lock, &closefd, false);
+			      &has_lock, &closefd, false,
+			      &reusing_open_state_fd);
 	if (FSAL_IS_ERROR(status)) {
 		return status;
 	}
@@ -1638,6 +1670,7 @@ fsal_status_t mem_write2(struct fsal_obj_handle *obj_hdl,
 	struct fsal_fd *fsal_fd;
 	bool has_lock, closefd = false;
 	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	bool reusing_open_state_fd = false;
 
 	if (info != NULL) {
 		/* Currently we don't support WRITE_PLUS */
@@ -1653,7 +1686,8 @@ fsal_status_t mem_write2(struct fsal_obj_handle *obj_hdl,
 	status = fsal_find_fd(&fsal_fd, obj_hdl, &myself->mh_file.fd,
 			      &myself->mh_file.share, bypass, state,
 			      FSAL_O_WRITE, mem_open_func, mem_close_func,
-			      &has_lock, &closefd, false);
+			      &has_lock, &closefd, false,
+			      &reusing_open_state_fd);
 	if (FSAL_IS_ERROR(status)) {
 		return status;
 	}
@@ -1747,6 +1781,7 @@ fsal_status_t mem_lock_op2(struct fsal_obj_handle *obj_hdl,
 	bool bypass = false;
 	fsal_openflags_t openflags;
 	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	bool reusing_open_state_fd = false;
 
 	if (obj_hdl->type != REGULAR_FILE) {
 		/* Currently can only lock a file */
@@ -1779,7 +1814,8 @@ fsal_status_t mem_lock_op2(struct fsal_obj_handle *obj_hdl,
 	status = fsal_find_fd(&fsal_fd, obj_hdl, &myself->mh_file.fd,
 			      &myself->mh_file.share, bypass, state,
 			      openflags, mem_open_func, mem_close_func,
-			      &has_lock, &closefd, true);
+			      &has_lock, &closefd, true,
+			      &reusing_open_state_fd);
 	if (FSAL_IS_ERROR(status)) {
 		return status;
 	}
@@ -1811,6 +1847,11 @@ fsal_status_t mem_close2(struct fsal_obj_handle *obj_hdl,
 	struct mem_fsal_obj_handle *myself = container_of(obj_hdl,
 				  struct mem_fsal_obj_handle, obj_handle);
 	fsal_status_t status;
+
+#ifdef USE_LTTNG
+	tracepoint(fsalmem, mem_close, __func__, __LINE__, myself,
+		   myself->m_name, state);
+#endif
 
 	if (state->state_type == STATE_TYPE_SHARE ||
 	    state->state_type == STATE_TYPE_NLM_SHARE ||
@@ -1907,17 +1948,19 @@ static void mem_handle_to_key(struct fsal_obj_handle *obj_hdl,
  */
 static void mem_release(struct fsal_obj_handle *obj_hdl)
 {
+	struct mem_fsal_export *mfe;
 	struct mem_fsal_obj_handle *myself;
 
 	myself = container_of(obj_hdl,
 			      struct mem_fsal_obj_handle,
 			      obj_handle);
+	mfe = myself->mfo_exp;
 
 	if (myself->is_export || !glist_empty(&myself->dirents)) {
 		/* Entry is still live: it's either an export, or in a dir */
 #ifdef USE_LTTNG
 		tracepoint(fsalmem, mem_inuse, __func__, __LINE__, myself,
-			   myself->is_export);
+			   myself->attrs.numlinks, myself->is_export);
 #endif
 		LogDebug(COMPONENT_FSAL,
 			 "Releasing live hdl=%p, name=%s, don't deconstruct it",
@@ -1934,7 +1977,7 @@ static void mem_release(struct fsal_obj_handle *obj_hdl)
 	switch (obj_hdl->type) {
 	case DIRECTORY:
 		/* Empty directory */
-		mem_clean_dir_tree(myself);
+		mem_clean_all_dirents(myself);
 		break;
 	case REGULAR_FILE:
 		break;
@@ -1950,7 +1993,9 @@ static void mem_release(struct fsal_obj_handle *obj_hdl)
 		break;
 	}
 
+	PTHREAD_RWLOCK_wrlock(&mfe->mfe_exp_lock);
 	mem_free_handle(myself);
+	PTHREAD_RWLOCK_unlock(&mfe->mfe_exp_lock);
 }
 
 void mem_handle_ops_init(struct fsal_obj_ops *ops)
@@ -1958,7 +2003,6 @@ void mem_handle_ops_init(struct fsal_obj_ops *ops)
 	ops->release = mem_release;
 	ops->lookup = mem_lookup;
 	ops->readdir = mem_readdir;
-	ops->create = mem_create;
 	ops->mkdir = mem_mkdir;
 	ops->mknode = mem_mknode;
 	ops->symlink = mem_symlink;

@@ -234,7 +234,7 @@ get_quota(struct fsal_export *exp_hdl, const char *filepath, int quota_type,
 	if (stat(filepath, &path_stat) < 0) {
 		retval = errno;
 		LogMajor(COMPONENT_FSAL,
-			 "GPFS get_quota, fstat: root_path: %s, errno=(%d) %s",
+			 "GPFS get quota, stat: root_path: %s, errno=(%d) %s",
 			 fs->path, retval, strerror(retval));
 		return fsalstat(posix2fsal_error(retval), retval);
 	}
@@ -242,7 +242,7 @@ get_quota(struct fsal_export *exp_hdl, const char *filepath, int quota_type,
 	if ((major(path_stat.st_dev) != fs->dev.major) ||
 	    (minor(path_stat.st_dev) != fs->dev.minor)) {
 		LogMajor(COMPONENT_FSAL,
-			 "GPFS get_quota: crossed mount boundary! root_path: %s, quota path: %s",
+			 "GPFS get quota: crossed mount boundary! root_path: %s, quota path: %s",
 			 fs->path, filepath);
 		return fsalstat(ERR_FSAL_FAULT, 0);  /* maybe a better error? */
 	}
@@ -292,7 +292,7 @@ set_quota(struct fsal_export *exp_hdl, const char *filepath, int quota_type,
 	if (stat(filepath, &path_stat) < 0) {
 		retval = errno;
 		LogMajor(COMPONENT_FSAL,
-			 "GPFS set_quota, fstat: root_path: %s, errno=(%d) %s",
+			 "GPFS set quota, stat: root_path: %s, errno=(%d) %s",
 			 fs->path, retval, strerror(retval));
 		return fsalstat(posix2fsal_error(retval), retval);
 	}
@@ -300,7 +300,7 @@ set_quota(struct fsal_export *exp_hdl, const char *filepath, int quota_type,
 	if ((major(path_stat.st_dev) != fs->dev.major) ||
 	    (minor(path_stat.st_dev) != fs->dev.minor)) {
 		LogMajor(COMPONENT_FSAL,
-			 "GPFS set_quota: crossed mount boundary! root_path: %s, quota path: %s",
+			 "GPFS set quota: crossed mount boundary! root_path: %s, quota path: %s",
 			 fs->path, filepath);
 		return fsalstat(ERR_FSAL_FAULT, 0);  /* maybe a better error? */
 	}
@@ -393,6 +393,9 @@ gpfs_host_to_key(struct fsal_export *exp_hdl,
 {
 	struct gpfs_file_handle *hdl;
 
+	if (fh_desc->len < offsetof(struct gpfs_file_handle, f_handle))
+		return fsalstat(ERR_FSAL_INVAL, 0);
+
 	hdl = (struct gpfs_file_handle *)fh_desc->addr;
 	fh_desc->len = hdl->handle_key_size;	/* pass back the key size */
 
@@ -430,6 +433,7 @@ gpfs_alloc_state(struct fsal_export *exp_hdl, enum state_type state_type,
 	my_fd = &container_of(state, struct gpfs_state_fd, state)->gpfs_fd;
 
 	my_fd->fd = -1;
+	my_fd->openflags = FSAL_O_CLOSED;
 
 	return state;
 }

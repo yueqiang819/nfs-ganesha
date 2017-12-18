@@ -155,7 +155,6 @@ static int nfs4_write(struct nfs_argop4 *op, compound_data_t *data,
 	uint64_t size = 0;
 	size_t written_size = 0;
 	uint64_t offset;
-	bool eof_met;
 	bool sync = false;
 	void *bufferdata;
 	stable_how4 stable_how;
@@ -303,17 +302,11 @@ static int nfs4_write(struct nfs_argop4 *op, compound_data_t *data,
 		 */
 		state_open = NULL;
 
-		/* Special stateid, no open state, check to see if any share
-		 * conflicts The stateid is all-0 or all-1
-		 */
-		res_WRITE4->status = nfs4_Errno_state(
-				state_share_anonymous_io_start(
-					obj,
-					OPEN4_SHARE_ACCESS_WRITE,
-					SHARE_BYPASS_NONE));
-
-		if (res_WRITE4->status != NFS4_OK)
+		/* Check for delegation conflict. */
+		if (state_deleg_conflict(obj, true)) {
+			res_WRITE4->status = NFS4ERR_DELAY;
 			goto out;
+		}
 
 		anonymous_started = true;
 	}
@@ -402,16 +395,9 @@ static int nfs4_write(struct nfs_argop4 *op, compound_data_t *data,
 		}
 	}
 
-	if (obj->fsal->m_ops.support_ex(obj)) {
-		/* Call the new fsal_write */
-		fsal_status = fsal_write2(obj, false, state_found, offset, size,
-					  &written_size, bufferdata, &sync,
-					  info);
-	} else {
-		/* Call legacy fsal_rdwr */
-		fsal_status = fsal_rdwr(obj, io, offset, size, &written_size,
-					bufferdata, &eof_met, &sync, info);
-	}
+	/* Call the new fsal_write */
+	fsal_status = fsal_write2(obj, false, state_found, offset, size,
+				  &written_size, bufferdata, &sync, info);
 
 	if (FSAL_IS_ERROR(fsal_status)) {
 		LogDebug(COMPONENT_NFS_V4, "write returned %s",
@@ -439,9 +425,6 @@ static int nfs4_write(struct nfs_argop4 *op, compound_data_t *data,
 	res_WRITE4->status = NFS4_OK;
 
  done:
-
-	if (anonymous_started)
-		state_share_anonymous_io_done(obj, OPEN4_SHARE_ACCESS_WRITE);
 
 	server_stats_io_done(size, written_size,
 			     (res_WRITE4->status == NFS4_OK) ? true : false,

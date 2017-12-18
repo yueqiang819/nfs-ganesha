@@ -95,6 +95,10 @@ struct vfs_fsal_obj_handle *alloc_handle(int dirfd,
 	hdl->up_ops = exp_hdl->up_ops;
 	hdl->obj_handle.fs = fs;
 
+	LogFullDebug(COMPONENT_FSAL,
+		     "Creating object %p for file %s of type %s",
+		     hdl, path, object_file_type_to_str(hdl->obj_handle.type));
+
 	if (hdl->obj_handle.type == REGULAR_FILE) {
 		hdl->u.file.fd.fd = -1;	/* no open on this yet */
 		hdl->u.file.fd.openflags = FSAL_O_CLOSED;
@@ -148,13 +152,10 @@ struct vfs_fsal_obj_handle *alloc_handle(int dirfd,
 
  spcerr:
 	if (hdl->obj_handle.type == SYMBOLIC_LINK) {
-		if (hdl->u.symlink.link_content != NULL)
-			gsh_free(hdl->u.symlink.link_content);
+		gsh_free(hdl->u.symlink.link_content);
 	} else if (vfs_unopenable_type(hdl->obj_handle.type)) {
-		if (hdl->u.unopenable.name != NULL)
-			gsh_free(hdl->u.unopenable.name);
-		if (hdl->u.unopenable.dir != NULL)
-			gsh_free(hdl->u.unopenable.dir);
+		gsh_free(hdl->u.unopenable.name);
+		gsh_free(hdl->u.unopenable.dir);
 	}
 	gsh_free(hdl);		/* elvis has left the building */
 	return NULL;
@@ -1068,8 +1069,8 @@ static fsal_status_t linkfile(struct fsal_obj_handle *obj_hdl,
 
 	LogFullDebug(COMPONENT_FSAL, "link to %s", name);
 
-	if (!op_ctx->fsal_export->exp_ops.
-	    fs_supports(op_ctx->fsal_export, fso_link_support)) {
+	if (!op_ctx->fsal_export->exp_ops.fs_supports(
+				op_ctx->fsal_export, fso_link_support)) {
 		fsal_error = ERR_FSAL_NOTSUPP;
 		goto out;
 	}
@@ -1620,23 +1621,18 @@ static void release(struct fsal_obj_handle *obj_hdl)
 	fsal_obj_handle_fini(obj_hdl);
 
 	if (type == SYMBOLIC_LINK) {
-		if (myself->u.symlink.link_content != NULL)
-			gsh_free(myself->u.symlink.link_content);
+		gsh_free(myself->u.symlink.link_content);
 	} else if (type == REGULAR_FILE) {
 		struct gsh_buffdesc key;
 
 		handle_to_key(obj_hdl, &key);
 		vfs_state_release(&key);
 	} else if (type == DIRECTORY) {
-		if (myself->u.directory.path != NULL)
-			gsh_free(myself->u.directory.path);
-		if (myself->u.directory.fs_location != NULL)
-			gsh_free(myself->u.directory.fs_location);
+		gsh_free(myself->u.directory.path);
+		gsh_free(myself->u.directory.fs_location);
 	} else if (vfs_unopenable_type(type)) {
-		if (myself->u.unopenable.name != NULL)
-			gsh_free(myself->u.unopenable.name);
-		if (myself->u.unopenable.dir != NULL)
-			gsh_free(myself->u.unopenable.dir);
+		gsh_free(myself->u.unopenable.name);
+		gsh_free(myself->u.unopenable.dir);
 	}
 
 	LogDebug(COMPONENT_FSAL,
@@ -1657,6 +1653,7 @@ static fsal_status_t vfs_fs_locations(struct fsal_obj_handle *obj_hdl,
 
 	myself = container_of(obj_hdl, struct vfs_fsal_obj_handle, obj_handle);
 	struct vfs_filesystem *vfs_fs = myself->obj_handle.fs->private_data;
+	struct fs_location4 *loc_val = fs_locs->locations.locations_val;
 
 	LogFullDebug(COMPONENT_FSAL,
 		     "vfs_fs = %s root_fd = %d major = %d minor = %d",
@@ -1686,16 +1683,11 @@ static fsal_status_t vfs_fs_locations(struct fsal_obj_handle *obj_hdl,
 		nfs4_pathname4_free(&fs_locs->fs_root);
 		nfs4_pathname4_alloc(&fs_locs->fs_root,
 				     myself->u.directory.path);
-		strncpy(fs_locs->locations.locations_val->
-			server.server_val->utf8string_val,
+		strncpy(loc_val->server.server_val->utf8string_val,
 			server, strlen(server));
-		fs_locs->locations.locations_val->
-			server.server_val->utf8string_len = strlen(server);
-		nfs4_pathname4_free(&fs_locs->
-				    locations.locations_val->rootpath);
-		nfs4_pathname4_alloc(&fs_locs->
-				     locations.locations_val->rootpath,
-				     path_work);
+		loc_val->server.server_val->utf8string_len = strlen(server);
+		nfs4_pathname4_free(&loc_val->rootpath);
+		nfs4_pathname4_alloc(&loc_val->rootpath, path_work);
 
 		gsh_free(path_sav);
 	} else {

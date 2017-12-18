@@ -59,17 +59,21 @@ Drop_Delay_Errors(bool, default false)
     For NFSv3, whether to drop rather than reply to requests yielding delay
     errors.  False by default and settable with Drop_Delay_Errors.
 
-Dispatch_Max_Reqs(uint32, range 1 to 1024*128*16, default 5000)
-    Total number of requests to allow into the dispatcher at once.
-
-Dispatch_Max_Reqs_Xprt(uint32, range 1 to 2048, default 512)
-    Number of requests to allow into the dispatcher from one specific transport.
-
 Plugins_Dir(path, default "/usr/lib64/ganesha")
     Path to the directory containing server specific modules
 
+Enable_NFS_Stats(bool, default true)
+    Whether to collect perfomance statistics. By default the perfomance
+    counting is enabled. Enable_NFS_Stats can be enabled or disabled
+    dynamically via ganesha_stats.
+
 Enable_Fast_Stats(bool, default false)
-    Whether to use fast stats.
+    Whether to use fast stats. If enabled this will skip statistics counters
+    collection for per client and per export.
+
+Enable_FSAL_Stats(bool, default false)
+    Whether to count and collect FSAL specific performance statistics.
+    Enable_FSAL_Stats can be enabled or disabled dynamically via ganesha_stats
 
 Short_File_Handle(bool, default false)
     Whether to use short NFS file handle to accommodate VMware NFS client.
@@ -85,13 +89,6 @@ heartbeat_freq(uint32, range 0 to 5000 default 1000)
 
 Enable_NLM(bool, default true)
     Whether to support the Network Lock Manager protocol.
-
-Decoder_Fridge_Expiration_Delay(int64, range 0 to 7200, default 600)
-    How long (in seconds) to let unused decoder threads wait before exiting.
-
-Decoder_Fridge_Block_Timeout(int64, range 0 to 7200, default 600)
-    How long (in seconds) to wait for the decoder fridge to accept a task
-    before erroring.
 
 Blocked_Lock_Poller_Interval(int64, range 0 to 180, default 10)
     Polling interval for blocked lock polling thread
@@ -115,6 +112,14 @@ fsid_device(bool, default false)
 mount_path_pseudo(bool, default false)
     Whether to use Pseudo (true) or Path (false) for NFS v3 and 9P mounts.
 
+    This option defaults to false for backward compatibility, however, for
+    new setups, it's strongly recommended to be set true since it then means
+    the same server path for the mount is used for both v3 and v4.x.
+
+Dbus_Name_Prefix
+    DBus name prefix. Required if one wants to run multiple ganesha instances on
+    single host. The prefix should be different for every ganesha instance. If
+    this is set, the dbus name will be <prefix>.org.ganesha.nfsd
 
 Parameters controlling TCP DRC behavior:
 ----------------------------------------
@@ -170,9 +175,6 @@ DRC_UDP_Checksum(bool, default true)
 
 Parameters affecting the relation with TIRPC:
 --------------------------------------------------------------------------------
-
-RPC_Debug_Flags(uint32, range 0 to UINT32_MAX, default 0)
-    Debug flags for TIRPC.
 
 RPC_Max_Connections(uint32, range 1 to 10000, default 1024)
     Maximum number of connections for TIRPC.
@@ -280,3 +282,26 @@ pnfs_mds(book, default false)
 
 pnfs_ds(book, default false)
     Whether this a pNFS DS server.
+
+RecoveryBackend(path, default "fs")
+    Use different backend for client info:
+    - fs : shared filesystem
+    - rados_kv : rados key-value
+
+Minor_Versions(enum list, values [0, 1, 2], default [0, 1, 2])
+    List of supported NFSV4 minor version numbers.
+
+Slot_Table_Size(uint32, range 1 to 1024, default 64)
+    Size of the NFSv4.1 slot table
+
+RADOS_KV {}
+--------------------------------------------------------------------------------
+
+ceph_conf(string, no default)
+    Connection to ceph cluster, should be file path for ceph configuration.
+
+userid(path, no default)
+    User ID to ceph cluster.
+
+pool(string, no default)
+    Pool for client info.

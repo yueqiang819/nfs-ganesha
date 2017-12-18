@@ -84,27 +84,7 @@ static inline bool nullfs_unopenable_type(object_file_type_t type)
 	}
 }
 
-	/* I/O management */
-fsal_status_t nullfs_open(struct fsal_obj_handle *obj_hdl,
-			  fsal_openflags_t openflags);
-fsal_openflags_t nullfs_status(struct fsal_obj_handle *obj_hdl);
-fsal_status_t nullfs_read(struct fsal_obj_handle *obj_hdl,
-			  uint64_t offset,
-			  size_t buffer_size, void *buffer,
-			  size_t *read_amount, bool *end_of_file);
-fsal_status_t nullfs_write(struct fsal_obj_handle *obj_hdl,
-			   uint64_t offset,
-			   size_t buffer_size, void *buffer,
-			   size_t *write_amount, bool *fsal_stable);
-fsal_status_t nullfs_commit(struct fsal_obj_handle *obj_hdl,	/* sync */
-			    off_t offset, size_t len);
-fsal_status_t nullfs_lock_op(struct fsal_obj_handle *obj_hdl,
-			     void *p_owner,
-			     fsal_lock_op_t lock_op,
-			     fsal_lock_param_t *request_lock,
-			     fsal_lock_param_t *conflicting_lock);
-fsal_status_t nullfs_share_op(struct fsal_obj_handle *obj_hdl, void *p_owner,
-			      fsal_share_param_t request_share);
+/* I/O management */
 fsal_status_t nullfs_close(struct fsal_obj_handle *obj_hdl);
 
 /* Multi-FD */

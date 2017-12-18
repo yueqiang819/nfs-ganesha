@@ -419,7 +419,7 @@ nfsstat4 nfs_req_creds(struct svc_req *req)
 		    !uid2grp(op_ctx->original_creds.caller_uid,
 			     &op_ctx->caller_gdata)) {
 			/** @todo: do we really want to bail here? */
-			LogCrit(COMPONENT_DISPATCH,
+			LogInfo(COMPONENT_DISPATCH,
 				"Attempt to fetch managed_gids failed");
 			return NFS4ERR_ACCESS;
 		}
@@ -552,7 +552,7 @@ nfsstat4 nfs4_export_check_access(struct svc_req *req)
 	int port = get_port(op_ctx->caller_addr);
 
 	LogMidDebugAlt(COMPONENT_NFS_V4, COMPONENT_EXPORT,
-		    "nfs4_export_check_access about to call export_check_access");
+		       "about to call export_check_access");
 	export_check_access();
 
 	/* Check if any access at all */

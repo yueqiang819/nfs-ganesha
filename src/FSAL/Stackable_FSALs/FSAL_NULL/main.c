@@ -66,7 +66,6 @@ static struct fsal_staticfsinfo_t default_posix_info = {
 	.link_support = true,
 	.symlink_support = true,
 	.lock_support = true,
-	.lock_support_owner = false,
 	.lock_support_async_block = false,
 	.named_attr = true,
 	.unique_handles = true,
@@ -152,16 +151,6 @@ fsal_status_t nullfs_create_export(struct fsal_module *fsal_hdl,
 static struct nullfs_fsal_module NULLFS;
 struct next_ops next_ops;
 
-static bool nullfs_support_ex(struct fsal_obj_handle *obj_hdl)
-{
-	struct nullfs_fsal_obj_handle *handle =
-		container_of(obj_hdl, struct nullfs_fsal_obj_handle,
-			     obj_handle);
-
-	return handle->sub_handle->fsal->m_ops.support_ex(handle->sub_handle);
-}
-
-
 /* linkage to the exports and handle ops initializers
  */
 MODULE_INIT void nullfs_init(void)
@@ -177,7 +166,6 @@ MODULE_INIT void nullfs_init(void)
 	}
 	myself->m_ops.create_export = nullfs_create_export;
 	myself->m_ops.init_config = init_config;
-	myself->m_ops.support_ex = nullfs_support_ex;
 }
 
 MODULE_FINI void nullfs_unload(void)

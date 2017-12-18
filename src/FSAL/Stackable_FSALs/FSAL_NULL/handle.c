@@ -154,36 +154,6 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 					     handle, status);
 }
 
-static fsal_status_t create(struct fsal_obj_handle *dir_hdl,
-			    const char *name, struct attrlist *attrs_in,
-			    struct fsal_obj_handle **new_obj,
-			    struct attrlist *attrs_out)
-{
-	/** Parent directory nullfs handle. */
-	struct nullfs_fsal_obj_handle *nullfs_dir =
-		container_of(dir_hdl, struct nullfs_fsal_obj_handle,
-			     obj_handle);
-	/** Current nullfs export. */
-	struct nullfs_fsal_export *export =
-		container_of(op_ctx->fsal_export, struct nullfs_fsal_export,
-			     export);
-
-	/** Subfsal handle of the new file.*/
-	struct fsal_obj_handle *sub_handle;
-
-	*new_obj = NULL;
-
-	/* creating the file with a subfsal handle. */
-	op_ctx->fsal_export = export->export.sub_export;
-	fsal_status_t status = nullfs_dir->sub_handle->obj_ops.create(
-		nullfs_dir->sub_handle, name, attrs_in, &sub_handle, attrs_out);
-	op_ctx->fsal_export = &export->export;
-
-	/* wraping the subfsal handle in a nullfs handle. */
-	return nullfs_alloc_and_check_handle(export, sub_handle, dir_hdl->fs,
-					     new_obj, status);
-}
-
 static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 			     const char *name, struct attrlist *attrs_in,
 			     struct fsal_obj_handle **new_obj,
@@ -352,7 +322,7 @@ static enum fsal_dir_result nullfs_readdir_cb(
 	if (FSAL_IS_ERROR(nullfs_alloc_and_check_handle(state->exp, sub_handle,
 		sub_handle->fs, &new_obj, fsalstat(ERR_FSAL_NO_ERROR, 0)))) {
 		return false;
-	    }
+	}
 
 	op_ctx->fsal_export = &state->exp->export;
 	enum fsal_dir_result result = state->cb(name, new_obj, attrs,
@@ -538,31 +508,6 @@ static fsal_status_t getattrs(struct fsal_obj_handle *obj_hdl,
 	return status;
 }
 
-/*
- * NOTE: this is done under protection of the
- * attributes rwlock in the cache entry.
- */
-
-static fsal_status_t setattrs(struct fsal_obj_handle *obj_hdl,
-			      struct attrlist *attrs)
-{
-	struct nullfs_fsal_obj_handle *handle =
-		container_of(obj_hdl, struct nullfs_fsal_obj_handle,
-			     obj_handle);
-
-	struct nullfs_fsal_export *export =
-		container_of(op_ctx->fsal_export, struct nullfs_fsal_export,
-			     export);
-
-	/* calling subfsal method */
-	op_ctx->fsal_export = export->export.sub_export;
-	fsal_status_t status = handle->sub_handle->obj_ops.setattrs(
-		handle->sub_handle, attrs);
-	op_ctx->fsal_export = &export->export;
-
-	return status;
-}
-
 static fsal_status_t nullfs_setattr2(struct fsal_obj_handle *obj_hdl,
 				     bool bypass,
 				     struct state_t *state,
@@ -696,22 +641,14 @@ void nullfs_handle_ops_init(struct fsal_obj_ops *ops)
 	ops->readdir = read_dirents;
 	ops->compute_readdir_cookie = compute_readdir_cookie,
 	ops->dirent_cmp = dirent_cmp,
-	ops->create = create;
 	ops->mkdir = makedir;
 	ops->mknode = makenode;
 	ops->symlink = makesymlink;
 	ops->readlink = readsymlink;
 	ops->getattrs = getattrs;
-	ops->setattrs = setattrs;
 	ops->link = linkfile;
 	ops->rename = renamefile;
 	ops->unlink = file_unlink;
-	ops->open = nullfs_open;
-	ops->status = nullfs_status;
-	ops->read = nullfs_read;
-	ops->write = nullfs_write;
-	ops->commit = nullfs_commit;
-	ops->lock_op = nullfs_lock_op;
 	ops->close = nullfs_close;
 	ops->handle_to_wire = handle_to_wire;
 	ops->handle_to_key = handle_to_key;

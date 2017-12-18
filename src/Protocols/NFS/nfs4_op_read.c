@@ -209,7 +209,6 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 	state_t *state_found = NULL;
 	state_t *state_open = NULL;
 	struct fsal_obj_handle *obj = NULL;
-	bool sync = false;
 	bool anonymous_started = false;
 	state_owner_t *owner = NULL;
 	bool bypass = false;
@@ -303,8 +302,8 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 		/* This is a read operation, this means that the file
 		   MUST have been opened for reading */
 		if (state_open != NULL
-		    && (state_open->state_data.share.
-			share_access & OPEN4_SHARE_ACCESS_READ) == 0) {
+		    && (state_open->state_data.share.share_access &
+		    OPEN4_SHARE_ACCESS_READ) == 0) {
 			/* Even if file is open for write, the client
 			 * may do accidently read operation (caching).
 			 * Because of this, READ is allowed if not
@@ -312,8 +311,8 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 			 * for more details.
 			 */
 
-			if (state_open->state_data.share.
-			    share_deny & OPEN4_SHARE_DENY_READ) {
+			if (state_open->state_data.share.share_deny &
+			    OPEN4_SHARE_DENY_READ) {
 				/* Bad open mode, return NFS4ERR_OPENMODE */
 				res_READ4->status = NFS4ERR_OPENMODE;
 
@@ -342,8 +341,7 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 		 */
 		switch (state_found->state_type) {
 		case STATE_TYPE_SHARE:
-			if (data->minorversion == 0 &&
-			    !state_owner_confirmed(state_found)) {
+			if (!state_owner_confirmed(state_found)) {
 				res_READ4->status = NFS4ERR_BAD_STATEID;
 				goto out;
 			}
@@ -368,16 +366,12 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 		 * conflicts The stateid is all-0 or all-1
 		 */
 		bypass = arg_READ4->stateid.seqid != 0;
-		res_READ4->status = nfs4_Errno_state(
-				state_share_anonymous_io_start(
-					obj,
-					OPEN4_SHARE_ACCESS_READ,
-					arg_READ4->stateid.seqid != 0
-						? SHARE_BYPASS_READ
-						: SHARE_BYPASS_NONE));
 
-		if (res_READ4->status != NFS4_OK)
+		/* Check for delegation conflict. */
+		if (state_deleg_conflict(obj, false)) {
+			res_READ4->status = NFS4ERR_DELAY;
 			goto out;
+		}
 
 		anonymous_started = true;
 	}
@@ -458,16 +452,9 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 		}
 	}
 
-	if (obj->fsal->m_ops.support_ex(obj)) {
-		/* Call the new fsal_read2 */
-		fsal_status = fsal_read2(obj, bypass, state_found, offset, size,
-					 &read_size, bufferdata, &eof_met,
-					 info);
-	} else {
-		/* Call legacy fsal_rdwr */
-		fsal_status = fsal_rdwr(obj, io, offset, size, &read_size,
-					bufferdata, &eof_met, &sync, info);
-	}
+	/* Call the new fsal_read2 */
+	fsal_status = fsal_read2(obj, bypass, state_found, offset, size,
+				 &read_size, bufferdata, &eof_met, info);
 
 	if (FSAL_IS_ERROR(fsal_status)) {
 		res_READ4->status = nfs4_Errno_status(fsal_status);
@@ -508,9 +495,6 @@ static int nfs4_read(struct nfs_argop4 *op, compound_data_t *data,
 	res_READ4->status = NFS4_OK;
 
  done:
-
-	if (anonymous_started)
-		state_share_anonymous_io_done(obj, OPEN4_SHARE_ACCESS_READ);
 
 	server_stats_io_done(size, read_size,
 			     (res_READ4->status == NFS4_OK) ? true : false,

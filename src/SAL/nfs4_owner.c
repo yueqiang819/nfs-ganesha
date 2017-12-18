@@ -323,23 +323,22 @@ uint64_t nfs4_owner_rbt_hash_func(hash_parameter_t *hparam,
 
 void free_nfs4_owner(state_owner_t *owner)
 {
-	if (owner->so_owner.so_nfs4_owner.so_related_owner != NULL)
-		dec_state_owner_ref(owner->so_owner.so_nfs4_owner.
-				    so_related_owner);
+	state_nfs4_owner_t *nfs4_owner = &owner->so_owner.so_nfs4_owner;
+
+	if (nfs4_owner->so_related_owner != NULL)
+		dec_state_owner_ref(nfs4_owner->so_related_owner);
 
 	/* Release the saved response. */
-	nfs4_Compound_FreeOne(&owner->so_owner.so_nfs4_owner.so_resp);
+	nfs4_Compound_FreeOne(&nfs4_owner->so_resp);
 
 	/* Remove the owner from the owners per clientid list. */
-	PTHREAD_MUTEX_lock(&owner->so_owner.so_nfs4_owner.so_clientrec
-			   ->cid_mutex);
+	PTHREAD_MUTEX_lock(&nfs4_owner->so_clientrec->cid_mutex);
 
-	glist_del(&owner->so_owner.so_nfs4_owner.so_perclient);
+	glist_del(&nfs4_owner->so_perclient);
 
-	PTHREAD_MUTEX_unlock(&owner->so_owner.so_nfs4_owner.so_clientrec
-			     ->cid_mutex);
+	PTHREAD_MUTEX_unlock(&nfs4_owner->so_clientrec->cid_mutex);
 
-	dec_client_id_ref(owner->so_owner.so_nfs4_owner.so_clientrec);
+	dec_client_id_ref(nfs4_owner->so_clientrec);
 }
 
 static hash_parameter_t nfs4_owner_param = {
@@ -378,33 +377,30 @@ int Init_nfs4_owner(void)
  */
 static void init_nfs4_owner(state_owner_t *owner)
 {
-	glist_init(&owner->so_owner.so_nfs4_owner.so_state_list);
+	state_nfs4_owner_t *nfs4_owner = &owner->so_owner.so_nfs4_owner;
+
+	glist_init(&nfs4_owner->so_state_list);
 
 	/* Increment refcount on related owner */
-	if (owner->so_owner.so_nfs4_owner.so_related_owner != NULL)
-		inc_state_owner_ref(owner->so_owner.so_nfs4_owner.
-				    so_related_owner);
+	if (nfs4_owner->so_related_owner != NULL)
+		inc_state_owner_ref(nfs4_owner->so_related_owner);
 
 	/* Increment reference count for clientid record */
-	inc_client_id_ref(owner->so_owner.so_nfs4_owner.so_clientrec);
+	inc_client_id_ref(nfs4_owner->so_clientrec);
 
-	PTHREAD_MUTEX_lock(&owner->so_owner.so_nfs4_owner.so_clientrec
-			   ->cid_mutex);
+	PTHREAD_MUTEX_lock(&nfs4_owner->so_clientrec->cid_mutex);
 
 	if (owner->so_type == STATE_OPEN_OWNER_NFSV4) {
 		/* If open owner, add to clientid lock owner list */
-		glist_add_tail(&owner->so_owner.so_nfs4_owner.so_clientrec->
-			       cid_openowners,
-			       &owner->so_owner.so_nfs4_owner.so_perclient);
+		glist_add_tail(&nfs4_owner->so_clientrec->cid_openowners,
+			       &nfs4_owner->so_perclient);
 	} else if (owner->so_type == STATE_LOCK_OWNER_NFSV4) {
 		/* If lock owner, add to clientid open owner list */
-		glist_add_tail(&owner->so_owner.so_nfs4_owner.so_clientrec->
-			       cid_lockowners,
-			       &owner->so_owner.so_nfs4_owner.so_perclient);
+		glist_add_tail(&nfs4_owner->so_clientrec->cid_lockowners,
+			       &nfs4_owner->so_perclient);
 	}
 
-	PTHREAD_MUTEX_unlock(&owner->so_owner.so_nfs4_owner.so_clientrec
-			     ->cid_mutex);
+	PTHREAD_MUTEX_unlock(&nfs4_owner->so_clientrec->cid_mutex);
 }
 
 /**
@@ -425,6 +421,7 @@ void nfs4_owner_PrintAll(void)
  * @param[in]  init_seqid    The starting seqid (for NFSv4.0)
  * @param[out] pisnew        Whether the owner actually is new
  * @param[in]  care          Care flag (to unify v3/v4 owners?)
+ * @param[in]  confirm       Create with it already confirmed?
  *
  * @return A new state owner or NULL.
  */
@@ -433,7 +430,7 @@ state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t *name,
 				 state_owner_type_t type,
 				 state_owner_t *related_owner,
 				 unsigned int init_seqid, bool_t *pisnew,
-				 care_t care)
+				 care_t care, bool_t confirm)
 {
 	state_owner_t key;
 	state_owner_t *owner;
@@ -452,12 +449,7 @@ state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t *name,
 	key.so_owner.so_nfs4_owner.so_resp.resop = NFS4_OP_ILLEGAL;
 	key.so_owner.so_nfs4_owner.so_args.argop = NFS4_OP_ILLEGAL;
 	key.so_refcount = 1;
-#if 0
-	/* WAITING FOR COMMUNITY FIX */
-	/* setting lock owner confirmed */
-	if (type == STATE_LOCK_OWNER_NFSV4)
-		key.so_owner.so_nfs4_owner.so_confirmed = 1;
-#endif
+	key.so_owner.so_nfs4_owner.so_confirmed = confirm;
 
 	if (isFullDebug(COMPONENT_STATE)) {
 		char str[LOG_BUFF_LEN] = "\0";
@@ -577,9 +569,10 @@ void Process_nfs4_conflict(LOCK4denied *denied, state_owner_t *holder,
  */
 void Release_nfs4_denied(LOCK4denied *denied)
 {
-	if (denied->owner.owner.owner_val != unknown_owner.so_owner_val
-	    && denied->owner.owner.owner_val != NULL)
+	if (denied->owner.owner.owner_val != unknown_owner.so_owner_val) {
 		gsh_free(denied->owner.owner.owner_val);
+		denied->owner.owner.owner_val = NULL;
+	}
 }
 
 /**
@@ -665,7 +658,8 @@ void Copy_nfs4_state_req(state_owner_t *owner, seqid4 seqid, nfs_argop4 *args,
 }
 
 /**
- * @brief Check NFS4 request for valid seqid for replay, next request, or BAD_SEQID.
+ * @brief Check NFS4 request for valid seqid for replay, next request, or
+ *        BAD_SEQID.
  *
  * Returns true if the request is the next seqid.  If the request is a
  * replay, copies the saved response and returns false.  Otherwise,

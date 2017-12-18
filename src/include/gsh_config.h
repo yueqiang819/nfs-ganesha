@@ -59,6 +59,7 @@ typedef enum protos {
 	P_NLM,			/*< NLM (for v3) */
 	P_RQUOTA,		/*< RQUOTA (for v3) */
 	P_NFS_VSOCK,		/*< NFS over vmware, qemu vmci sockets */
+	P_NFS_RDMA,		/*< NFS over RPC/RDMA */
 	P_COUNT			/*< Number of protocols */
 } protos;
 
@@ -144,11 +145,6 @@ typedef enum protos {
 #define DRC_UDP_CHECKSUM true
 
 /**
- * @brief Default value for core_param.rpc.debug_flags
- */
-#define TIRPC_DEBUG_FLAGS 0x0
-
-/**
  * Default value for core_param.rpc.max_send_buffer_size
  */
 #define NFS_DEFAULT_SEND_BUFFER_SIZE 1048576
@@ -180,6 +176,11 @@ typedef enum protos {
 #define CORE_OPTION_NFS_VSOCK 0x00000008 /*< AF_VSOCK NFS listener */
 
 /**
+ * @brief Support RPC/RDMA v1
+ */
+#define CORE_OPTION_NFS_RDMA 0x00000010 /*< RPC/RDMA v1 NFS listener */
+
+/**
  * @brief Support NFSv3 and NFSv4.
  */
 #define CORE_OPTION_ALL_NFS_VERS (CORE_OPTION_NFSV3 | CORE_OPTION_NFSV4)
@@ -190,6 +191,7 @@ typedef enum protos {
 #define CORE_OPTION_ALL_VERS (CORE_OPTION_NFSV3 |			\
 				CORE_OPTION_NFSV4 |			\
 				CORE_OPTION_NFS_VSOCK |			\
+				CORE_OPTION_NFS_RDMA |			\
 				CORE_OPTION_9P)
 
 typedef struct nfs_core_param {
@@ -198,7 +200,7 @@ typedef struct nfs_core_param {
 	uint16_t port[P_COUNT];
 	/** The address to which to bind for our listening port.
 	    IPv4 only, for now.  Set by the Bind_Addr option. */
-	struct sockaddr_in bind_addr;
+	struct sockaddr_storage bind_addr;
 	/** An array of RPC program numbers.  The correct values, by
 	    default, they may be set to incorrect values with the
 	    NFS_Program, MNT_Program, NLM_Program, and
@@ -225,13 +227,6 @@ typedef struct nfs_core_param {
 	    retry and there is no NFSERR_DELAY, this seems like an
 	    excellent idea. */
 	bool drop_delay_errors;
-	/** Total number of requests to allow into the dispatcher at
-	    once.  Defaults to 5000 and settable by Dispatch_Max_Reqs */
-	uint32_t dispatch_max_reqs;
-	/** Number of requests to allow into the dispatcher from one
-	    specific transport.  Defaults to 512 and settable by
-	    Dispatch_Max_Reqs_Xprt. */
-	uint32_t dispatch_max_reqs_xprt;
 	/** Parameters controlling the Duplicate Request Cache.  */
 	struct {
 		/** Whether to disable the DRC entirely.  Defaults to
@@ -305,10 +300,6 @@ typedef struct nfs_core_param {
 	} drc;
 	/** Parameters affecting the relation with TIRPC.   */
 	struct {
-		/** Debug flags for TIRPC.  Defaults to
-		    TIRPC_DEBUG_FLAGS and settable by
-		    RPC_Debug_Flags. */
-		uint32_t debug_flags;
 		/** Maximum number of connections for TIRPC.
 		    Defaults to 1024 and settable by
 		    RPC_Max_Connections. */
@@ -339,13 +330,6 @@ typedef struct nfs_core_param {
 			uint32_t max_gc;
 		} gss;
 	} rpc;
-	/** How long (in seconds) to let unused decoder threads wait before
-	    exiting.  Settable with Decoder_Fridge_Expiration_Delay. */
-	time_t decoder_fridge_expiration_delay;
-	/** How long (in seconds) to wait for the decoder fridge to
-	    accept a task before erroring.  Settable with
-	    Decoder_Fridge_Block_Timeout. */
-	time_t decoder_fridge_block_timeout;
 	/** Polling interval for blocked lock polling thread. */
 	time_t blocked_lock_poller_interval;
 	/** Protocols to support.  Should probably be renamed.
@@ -366,8 +350,12 @@ typedef struct nfs_core_param {
 	/** Whether to support the Remote Quota protocol.  Defaults
 	    to true and is settable with Enable_RQUOTA. */
 	bool enable_RQUOTA;
+	/** Whether to collect NFS stats.  Defaults to true. */
+	bool enable_NFSSTATS;
 	/** Whether to use fast stats.  Defaults to false. */
 	bool enable_FASTSTATS;
+	/** Whether to collect FSAL stats.  Defaults to false. */
+	bool enable_FSALSTATS;
 	/** Whether tcp sockets should use SO_KEEPALIVE */
 	bool enable_tcp_keepalive;
 	/** Maximum number of TCP probes before dropping the connection */
@@ -395,6 +383,11 @@ typedef struct nfs_core_param {
 	/** Whether to use Pseudo (true) or Path (false) for NFS v3 and 9P
 	    mounts. */
 	bool mount_path_pseudo;
+	/** DBus name prefix. Required if one wants to run multiple ganesha
+	    instances on single host. The prefix should be different for every
+	    ganesha instance. If this is set, dbus name will be
+	    <prefix>.org.ganesha.nfsd */
+	char *dbus_name_prefix;
 } nfs_core_parameter_t;
 
 /** @} */
@@ -429,6 +422,21 @@ typedef struct nfs_core_param {
  * @brief Default value of deleg_recall_retry_delay.
  */
 #define DELEG_RECALL_RETRY_DELAY_DEFAULT 1
+
+/**
+ * @brief Default value of recovery_backend.
+ */
+#define RECOVERY_BACKEND_DEFAULT "fs"
+
+/**
+ * @brief NFSv4 minor versions
+ */
+#define NFSV4_MINOR_VERSION_ZERO	(1 << 0)
+#define NFSV4_MINOR_VERSION_ONE	(1 << 1)
+#define NFSV4_MINOR_VERSION_TWO	(1 << 2)
+#define NFSV4_MINOR_VERSION_ALL	(NFSV4_MINOR_VERSION_ZERO | \
+					 NFSV4_MINOR_VERSION_ONE | \
+					 NFSV4_MINOR_VERSION_TWO)
 
 typedef struct nfs_version4_parameter {
 	/** Whether to disable the NFSv4 grace period.  Defaults to
@@ -470,6 +478,12 @@ typedef struct nfs_version4_parameter {
 	bool pnfs_mds;
 	/** Whether this a pNFS DS server. Defaults to false */
 	bool pnfs_ds;
+	/** Recovery backend */
+	char *recovery_backend;
+	/** List of supported NFSV4 minor versions */
+	unsigned int minor_versions;
+	/** Number of allowed slots in the 4.1 slot table */
+	uint32_t nb_slots;
 } nfs_version4_parameter_t;
 
 /** @} */

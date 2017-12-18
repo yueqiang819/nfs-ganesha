@@ -298,12 +298,10 @@ static int StrExportOptions(struct display_buffer *dspbuf,
 
 static char *client_types[] = {
 	[PROTO_CLIENT] = "PROTO_CLIENT",
-	[HOSTIF_CLIENT] = "HOSTIF_CLIENT",
 	[NETWORK_CLIENT] = "NETWORK_CLIENT",
 	[NETGROUP_CLIENT] = "NETGROUP_CLIENT",
 	[WILDCARDHOST_CLIENT] = "WILDCARDHOST_CLIENT",
 	[GSSPRINCIPAL_CLIENT] = "GSSPRINCIPAL_CLIENT",
-	[HOSTIF_CLIENT_V6] = "HOSTIF_CLIENT_V6",
 	[MATCH_ANY_CLIENT] = "MATCH_ANY_CLIENT",
 	[BAD_CLIENT] = "BAD_CLIENT"
 	 };
@@ -334,22 +332,8 @@ void LogClientListEntry(log_levels_t level,
 	(void) StrExportOptions(&dspbuf, &entry->client_perms);
 
 	switch (entry->type) {
-	case HOSTIF_CLIENT:
-		if (inet_ntop(AF_INET,
-			      &entry->client.hostif.clientaddr,
-			      addr,
-			      sizeof(addr)) == NULL) {
-			paddr = "Invalid Host address";
-		}
-		break;
-
 	case NETWORK_CLIENT:
-		if (inet_ntop(AF_INET,
-			      &entry->client.network.netaddr,
-			      addr,
-			      sizeof(addr)) == NULL) {
-			paddr = "Invalid Network address";
-		}
+		paddr = cidr_to_str(entry->client.network.cidr, CIDR_NOFLAGS);
 		break;
 
 	case NETGROUP_CLIENT:
@@ -362,15 +346,6 @@ void LogClientListEntry(log_levels_t level,
 
 	case GSSPRINCIPAL_CLIENT:
 		paddr = entry->client.gssprinc.princname;
-		break;
-
-	case HOSTIF_CLIENT_V6:
-		if (inet_ntop(AF_INET6,
-			      &entry->client.hostif.clientaddr6,
-			      addr,
-			      sizeof(addr)) == NULL) {
-			paddr = "Invalid Host address";
-		}
 		break;
 
 	case MATCH_ANY_CLIENT:
@@ -434,11 +409,11 @@ static int add_client(struct glist_head *client_list,
 	int errcnt = 0;
 	struct addrinfo *info;
 	CIDR *cidr;
-	uint32_t addr;
 	int rc;
 
 	cli = gsh_calloc(1, sizeof(struct exportlist_client_entry__));
 
+	cli->client.network.cidr = NULL;
 	glist_init(&cli->cle_list);
 	switch (type_hint) {
 	case TERM_V4_ANY:
@@ -456,21 +431,41 @@ static int add_client(struct glist_head *client_list,
 		cli->client.netgroup.netgroupname = gsh_strdup(client_tok + 1);
 		cli->type = NETGROUP_CLIENT;
 		break;
-	case TERM_V4CIDR:  /* this needs to be migrated to libcidr! (no v6) */
+	case TERM_V4CIDR:
+	case TERM_V6CIDR:
+	case TERM_V4ADDR:
+	case TERM_V6ADDR:
 		cidr = cidr_from_str(client_tok);
 		if (cidr == NULL) {
-			config_proc_error(cnode, err_type,
-					  "Expected a IPv4 CIDR address, got (%s)",
-					  client_tok);
+			switch (type_hint) {
+			case TERM_V4CIDR:
+				config_proc_error(cnode, err_type,
+						  "Expected a IPv4 CIDR address, got (%s)",
+						  client_tok);
+				break;
+			case TERM_V6CIDR:
+				config_proc_error(cnode, err_type,
+						  "Expected a IPv6 CIDR address, got (%s)",
+						  client_tok);
+				break;
+			case TERM_V4ADDR:
+				config_proc_error(cnode, err_type,
+						  "IPv4 addr (%s) not in presentation format",
+						  client_tok);
+				break;
+			case TERM_V6ADDR:
+				config_proc_error(cnode, err_type,
+						  "IPv6 addr (%s) not in presentation format",
+						  client_tok);
+				break;
+			default:
+				break;
+			}
 			err_type->invalid = true;
 			errcnt++;
 			goto out;
 		}
-		memcpy(&addr, &cidr->addr[12], 4);
-		cli->client.network.netaddr = ntohl(addr);
-		memcpy(&addr, &cidr->mask[12], 4);
-		cli->client.network.netmask = ntohl(addr);
-		cidr_free(cidr);
+		cli->client.network.cidr = cidr;
 		cli->type = NETWORK_CLIENT;
 		break;
 	case TERM_REGEX:
@@ -484,32 +479,6 @@ static int add_client(struct glist_head *client_list,
 		}
 		cli->client.wildcard.wildcard = gsh_strdup(client_tok);
 		cli->type = WILDCARDHOST_CLIENT;
-		break;
-	case TERM_V4ADDR:
-		rc = inet_pton(AF_INET, client_tok,
-			       &cli->client.hostif.clientaddr);
-		if (rc != 1) {
-			config_proc_error(cnode, err_type,
-					  "IPv4 addr (%s) not in presentation format",
-					  client_tok);
-			err_type->invalid = true;
-			errcnt++;
-			goto out;
-		}
-		cli->type = HOSTIF_CLIENT;
-		break;
-	case TERM_V6ADDR:
-		rc = inet_pton(AF_INET6, client_tok,
-			       &cli->client.hostif.clientaddr6);
-		if (rc != 1) {
-			config_proc_error(cnode, err_type,
-					  "IPv6 addr (%s) not in presentation format",
-					  client_tok);
-			err_type->invalid = true;
-			errcnt++;
-			goto out;
-		}
-		cli->type = HOSTIF_CLIENT_V6;
 		break;
 	case TERM_TOKEN: /* only dns names now. */
 		rc = getaddrinfo(client_tok, NULL, NULL, &info);
@@ -546,10 +515,9 @@ static int add_client(struct glist_head *client_list,
 						   &in_addr_last,
 						   sizeof(struct in_addr)) == 0)
 						continue;
-					memcpy(&(cli->client.hostif.clientaddr),
-					       &infoaddr,
-					       sizeof(struct in_addr));
-					cli->type = HOSTIF_CLIENT;
+					cli->client.network.cidr =
+						cidr_from_inaddr(&infoaddr);
+					cli->type = NETWORK_CLIENT;
 					ap_last = ap;
 					in_addr_last = infoaddr;
 
@@ -567,11 +535,9 @@ static int add_client(struct glist_head *client_list,
 						       sizeof(struct in6_addr)))
 						continue;
 					/* IPv6 address */
-					memcpy(
-					    &(cli->client.hostif.clientaddr6),
-					       &infoaddr,
-					       sizeof(struct in6_addr));
-					cli->type = HOSTIF_CLIENT_V6;
+					cli->client.network.cidr =
+						cidr_from_in6addr(&infoaddr);
+					cli->type = NETWORK_CLIENT;
 					ap_last = ap;
 					in6_addr_last = infoaddr;
 				} else
@@ -792,10 +758,10 @@ static int fsal_cfg_commit(void *node, void *link_mem, void *self_struct,
 	/* We are connected up to the fsal side.  Now
 	 * validate maxread/write etc with fsal params
 	 */
-	MaxRead = export->fsal_export->
-		exp_ops.fs_maxread(export->fsal_export);
-	MaxWrite = export->fsal_export->
-		exp_ops.fs_maxwrite(export->fsal_export);
+	MaxRead =
+	    export->fsal_export->exp_ops.fs_maxread(export->fsal_export);
+	MaxWrite =
+	    export->fsal_export->exp_ops.fs_maxwrite(export->fsal_export);
 
 	if (export->MaxRead > MaxRead && MaxRead != 0) {
 		LogInfo(COMPONENT_CONFIG,
@@ -814,6 +780,8 @@ static int fsal_cfg_commit(void *node, void *link_mem, void *self_struct,
 
 err:
 	release_root_op_context();
+	/* Don't leak the FSAL block */
+	err_type->dispose = true;
 	return errcnt;
 }
 
@@ -875,10 +843,10 @@ static int fsal_update_cfg_commit(void *node, void *link_mem, void *self_struct,
 	 * original export, which will then allow us to validate the
 	 * possibly changed values in the new export config.
 	 */
-	MaxRead = probe_exp->fsal_export->
-		exp_ops.fs_maxread(probe_exp->fsal_export);
-	MaxWrite = probe_exp->fsal_export->
-		exp_ops.fs_maxwrite(probe_exp->fsal_export);
+	MaxRead =
+	    probe_exp->fsal_export->exp_ops.fs_maxread(probe_exp->fsal_export);
+	MaxWrite =
+	    probe_exp->fsal_export->exp_ops.fs_maxwrite(probe_exp->fsal_export);
 
 	release_root_op_context();
 
@@ -1263,6 +1231,35 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 		return errcnt;  /* have errors. don't init or load a fsal */
 	}
 
+	if (commit_type != initial_export) {
+		/* add_export or update_export with new export_id. */
+		int rc = init_export_root(export);
+
+		if (rc) {
+			switch (rc) {
+			case EINVAL:
+				err_type->invalid = true;
+				break;
+
+			case EFAULT:
+				err_type->internal = true;
+				break;
+
+			default:
+				err_type->resource = true;
+			}
+
+			errcnt++;
+			return errcnt;
+		}
+
+		if (!mount_gsh_export(export)) {
+			err_type->internal = true;
+			errcnt++;
+			return errcnt;
+		}
+	}
+
 	if (!insert_gsh_export(export)) {
 		LogCrit(COMPONENT_CONFIG,
 			"Export id %d already in use.",
@@ -1281,38 +1278,6 @@ static int export_commit_common(void *node, void *link_mem, void *self_struct,
 	    export->export_perms.options & EXPORT_OPTION_NFSV4)
 		export_add_to_mount_work(export);
 
-	if (commit_type != initial_export) {
-		/* add_export or update_export with new export_id. */
-		int rc = init_export_root(export);
-
-		if (rc) {
-			export_revert(export);
-			errcnt++;
-
-			switch (rc) {
-			case EINVAL:
-				err_type->invalid = true;
-				break;
-
-			case EFAULT:
-				err_type->internal = true;
-				break;
-
-			default:
-				err_type->resource = true;
-			}
-
-			goto out;
-		}
-
-		if (!mount_gsh_export(export)) {
-			export_revert(export);
-			err_type->internal = true;
-			errcnt++;
-			goto out;
-		}
-	}
-
 	display_clients(export);
 
 success:
@@ -1330,7 +1295,6 @@ success:
 		"Export %d has %zd defined clients", export->export_id,
 		glist_length(&export->clients));
 
-out:
 	if (commit_type != update_export) {
 		/* For initial or add export, insert_gsh_export gave out
 		 * two references, a sentinel reference for the export's
@@ -2389,6 +2353,7 @@ void unexport(struct gsh_export *export)
 {
 	bool op_ctx_set = false;
 	struct root_op_context ctx;
+
 	/* Make the export unreachable */
 	LogDebug(COMPONENT_EXPORT,
 		 "Unexport %s, Pseduo %s",
@@ -2422,15 +2387,14 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 					       struct gsh_export *export)
 {
 	struct glist_head *glist;
-	in_addr_t addr = get_in_addr(hostaddr);
 	int rc;
 	int ipvalid = -1;	/* -1 need to print, 0 - invalid, 1 - ok */
 	char hostname[MAXHOSTNAMELEN + 1];
 	char ipstring[SOCK_NAME_MAX + 1];
+	CIDR *host_prefix = NULL;
+	exportlist_client_entry_t *client;
 
 	glist_for_each(glist, &export->clients) {
-		exportlist_client_entry_t *client;
-
 		client = glist_entry(glist, exportlist_client_entry_t,
 				     cle_list);
 		LogClientListEntry(NIV_MID_DEBUG,
@@ -2441,15 +2405,23 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 				   client);
 
 		switch (client->type) {
-		case HOSTIF_CLIENT:
-			if (client->client.hostif.clientaddr == addr)
-				return client;
-			break;
-
 		case NETWORK_CLIENT:
-			if ((client->client.network.netmask & ntohl(addr)) ==
-			    client->client.network.netaddr)
-				return client;
+			if (host_prefix == NULL) {
+				if (hostaddr->ss_family == AF_INET6) {
+					host_prefix = cidr_from_in6addr(
+						&((struct sockaddr_in6 *)
+							hostaddr)->sin6_addr);
+				} else {
+					host_prefix = cidr_from_inaddr(
+						&((struct sockaddr_in *)
+							hostaddr)->sin_addr);
+				}
+			}
+
+			if (cidr_contains(client->client.network.cidr,
+					  host_prefix) == 0) {
+				goto out;
+			}
 			break;
 
 		case NETGROUP_CLIENT:
@@ -2472,7 +2444,7 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 			 */
 			if (ng_innetgr(client->client.netgroup.netgroupname,
 				    hostname)) {
-				return client;
+				goto out;
 			}
 			break;
 
@@ -2487,7 +2459,7 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 			    (fnmatch(client->client.wildcard.wildcard,
 				     ipstring,
 				     FNM_PATHNAME) == 0)) {
-				return client;
+				goto out;
 			}
 
 			/* Try to get the entry from th IP/name cache */
@@ -2507,7 +2479,7 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 			}
 
 			if (rc != IP_NAME_SUCCESS)
-					break;
+				break;
 
 			/* At this point 'hostname' should contain the
 			 * name that was found
@@ -2515,7 +2487,7 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 			if (fnmatch
 			    (client->client.wildcard.wildcard, hostname,
 			     FNM_PATHNAME) == 0) {
-				return client;
+				goto out;
 			}
 			break;
 
@@ -2525,11 +2497,8 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 				"Unsupported type GSS_PRINCIPAL_CLIENT");
 			break;
 
-		case HOSTIF_CLIENT_V6:
-			break;
-
 		case MATCH_ANY_CLIENT:
-			return client;
+			goto out;
 
 		case BAD_CLIENT:
 		default:
@@ -2537,79 +2506,16 @@ static exportlist_client_entry_t *client_match(sockaddr_t *hostaddr,
 		}
 	}
 
-	/* no export found for this option */
-	return NULL;
+	client = NULL;
 
-}
+out:
 
-/**
- * @brief Match a specific option in the client export list
- *
- * @param[in]  paddrv6       Host to search for
- * @param[in]  clients       Client list to search
- * @param[out] client_found Matching entry
- * @param[in]  export_option Option to search for
- *
- * @return true if found, false otherwise.
- */
-static exportlist_client_entry_t *client_matchv6(struct in6_addr *paddrv6,
-						 struct gsh_export *export)
-{
-	struct glist_head *glist;
-
-	glist_for_each(glist, &export->clients) {
-		exportlist_client_entry_t *client;
-
-		client = glist_entry(glist, exportlist_client_entry_t,
-				     cle_list);
-		LogClientListEntry(NIV_MID_DEBUG,
-				   COMPONENT_EXPORT,
-				   __LINE__,
-				   (char *) __func__,
-				   "Match V6: ",
-				   client);
-
-		switch (client->type) {
-		case HOSTIF_CLIENT:
-		case NETWORK_CLIENT:
-		case NETGROUP_CLIENT:
-		case WILDCARDHOST_CLIENT:
-		case GSSPRINCIPAL_CLIENT:
-		case BAD_CLIENT:
-			break;
-
-		case HOSTIF_CLIENT_V6:
-			if (!memcmp(client->client.hostif.clientaddr6.s6_addr,
-				    paddrv6->s6_addr, 16)) {
-				/* Remember that IPv6 address are
-				 * 128 bits = 16 bytes long
-				 */
-				return client;
-			}
-			break;
-
-		case MATCH_ANY_CLIENT:
-			return client;
-
-		default:
-			break;
-		}
-	}
+	if (host_prefix != NULL)
+		cidr_free(host_prefix);
 
 	/* no export found for this option */
-	return NULL;
-}
+	return client;
 
-static exportlist_client_entry_t *client_match_any(sockaddr_t *hostaddr,
-						   struct gsh_export *export)
-{
-	if (hostaddr->ss_family == AF_INET6) {
-		struct sockaddr_in6 *psockaddr_in6 =
-		    (struct sockaddr_in6 *)hostaddr;
-		return client_matchv6(&(psockaddr_in6->sin6_addr), export);
-	} else {
-		return client_match(hostaddr, export);
-	}
 }
 
 /**
@@ -2873,7 +2779,7 @@ void export_check_access(void)
 	}
 
 	/* Does the client match anyone on the client list? */
-	client = client_match_any(hostaddr, op_ctx->ctx_export);
+	client = client_match(hostaddr, op_ctx->ctx_export);
 	if (client != NULL) {
 		/* Take client options */
 		op_ctx->export_perms->options = client->client_perms.options &
@@ -2960,8 +2866,8 @@ void export_check_access(void)
 		}
 
 		if (op_ctx->ctx_export != NULL) {
-			(void) StrExportOptions(&dspbuf,
-						&op_ctx->ctx_export->export_perms);
+			(void) StrExportOptions(
+				&dspbuf, &op_ctx->ctx_export->export_perms);
 			LogMidDebug(COMPONENT_EXPORT,
 				    "EXPORT          (%s)",
 				    perms);

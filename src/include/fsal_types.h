@@ -542,12 +542,14 @@ typedef enum {
 static inline fsal_accessflags_t FSAL_MODE_MASK(fsal_accessflags_t access)
 {
 	unsigned long acc = access & FSAL_MODE_BIT_MASK;
+
 	return (fsal_accessflags_t) acc;
 }
 
 static inline fsal_accessflags_t FSAL_ACE4_MASK(fsal_accessflags_t access)
 {
 	unsigned long acc = access & FSAL_ACE4_BIT_MASK;
+
 	return (fsal_accessflags_t) acc;
 }
 
@@ -623,7 +625,6 @@ typedef enum enum_fsal_fsinfo_options {
 	fso_link_support,
 	fso_symlink_support,
 	fso_lock_support,
-	fso_lock_support_owner,
 	fso_lock_support_async_block,
 	fso_named_attr,
 	fso_unique_handles,
@@ -632,11 +633,8 @@ typedef enum enum_fsal_fsinfo_options {
 	fso_auth_exportpath_xdev,
 	fso_delegations_r,
 	fso_delegations_w,
-	fso_share_support,
-	fso_share_support_owner,
 	fso_pnfs_ds_supported,
 	fso_pnfs_mds_supported,
-	fso_reopen_method,
 	fso_grace_method,
 	fso_link_supports_permission_checks,
 	fso_rename_changes_key,
@@ -659,7 +657,6 @@ typedef struct fsal_staticfsinfo_t {
 	bool link_support;	/*< FS supports hardlinks? */
 	bool symlink_support;	/*< FS supports symlinks? */
 	bool lock_support;	/*< FS supports file locking? */
-	bool lock_support_owner;	/*< FS supports lock owners? */
 	bool lock_support_async_block;	/*< FS supports blocking locks? */
 	bool named_attr;	/*< FS supports named attributes. */
 	bool unique_handles;	/*< Handles are unique and persistent. */
@@ -682,13 +679,9 @@ typedef struct fsal_staticfsinfo_t {
 
 	uint32_t xattr_access_rights;	/*< This indicates who is allowed
 					   to read/modify xattrs value. */
-	bool share_support;	/*< FS supports share reservation? */
-	bool share_support_owner;	/*< FS supports share reservation
-					   with open owners ? */
 	uint32_t delegations;	/*< fsal supports delegations */
 	bool pnfs_mds;		/*< fsal supports file pnfs MDS */
 	bool pnfs_ds;		/*< fsal supports file pnfs DS */
-	bool reopen_method;	/* fsal supports reopen method */
 	bool fsal_trace;	/*< fsal trace supports */
 	bool fsal_grace;	/*< fsal will handle grace */
 	bool link_supports_permission_checks;
@@ -789,8 +782,8 @@ static inline fsal_status_t fsalstat(fsal_errors_t major, int minor)
  *     printf("ERROR status = %d, %d\n", status.major,status.minor);
  *  }
  */
-#define FSAL_IS_ERROR(_status_) \
-	(!((_status_).major == ERR_FSAL_NO_ERROR))
+#define FSAL_IS_SUCCESS(_status_) ((_status_).major == ERR_FSAL_NO_ERROR)
+#define FSAL_IS_ERROR(_status_) (!FSAL_IS_SUCCESS(_status_))
 
 /**
  * @brief File system dynamic info.
@@ -872,6 +865,12 @@ typedef struct fsal_share_param_t {
 	uint32_t share_deny;
 	bool share_reclaim;
 } fsal_share_param_t;
+
+typedef enum {
+	FSAL_DELEG_NONE,
+	FSAL_DELEG_RD,
+	FSAL_DELEG_WR
+} fsal_deleg_t;
 
 typedef char fsal_verifier_t[NFS4_VERIFIER_SIZE];
 

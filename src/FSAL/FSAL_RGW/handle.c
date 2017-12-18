@@ -185,7 +185,10 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 	int rc;
 	fsal_status_t fsal_status = {ERR_FSAL_NO_ERROR, 0};
 	struct rgw_cb_arg rgw_cb_arg = {cb, cb_arg, dir_hdl, attrmask};
-	uint64_t r_whence = (whence) ? *whence : 0;
+
+	/* when whence_is_name, whence is a char pointer cast to
+	 * fsal_cookie_t */
+	const char *r_whence = (const char *) whence;
 
 	struct rgw_export *export =
 		container_of(op_ctx->fsal_export, struct rgw_export, export);
@@ -198,8 +201,8 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 
 	rc = 0;
 	*eof = false;
-	rc = rgw_readdir(export->rgw_fs, dir->rgw_fh, &r_whence, rgw_cb,
-			&rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
+	rc = rgw_readdir2(export->rgw_fs, dir->rgw_fh, r_whence, rgw_cb,
+			  &rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
 	if (rc < 0)
 		return rgw2fsal_error(rc);
 
@@ -287,70 +290,6 @@ int rgw_fsal_dirent_cmp(
 	const char *name2, fsal_cookie_t cookie2)
 {
 	return strcmp(name1, name2);
-}
-
-/**
- * @brief Create a regular file
- *
- * This function creates an empty, regular file.
- *
- * @param[in]     dir_hdl    Directory in which to create the file
- * @param[in]     name       Name of file to create
- * @param[in]     attrs_in   Attributes of newly created file
- * @param[in,out] obj_hdl    Handle for newly created file
- * @param[in,out] attrs_out  Optional attributes for newly created object
- *
- * @return FSAL status.
- */
-
-static fsal_status_t rgw_fsal_create(struct fsal_obj_handle *dir_hdl,
-				const char *name,
-				struct attrlist *attrs_in,
-				struct fsal_obj_handle **obj_hdl,
-				struct attrlist *attrs_out)
-{
-	int rc;
-	struct rgw_file_handle *rgw_fh;
-	struct rgw_handle *obj;
-	struct stat st;
-
-	struct rgw_export *export =
-	    container_of(op_ctx->fsal_export, struct rgw_export, export);
-
-	struct rgw_handle *dir = container_of(dir_hdl, struct rgw_handle,
-					      handle);
-
-	LogFullDebug(COMPONENT_FSAL,
-		"%s enter dir_hdl %p name %s", __func__, dir_hdl, name);
-
-	memset(&st, 0, sizeof(struct stat));
-
-	st.st_uid = op_ctx->creds->caller_uid;
-	st.st_gid = op_ctx->creds->caller_gid;
-	st.st_mode = fsal2unix_mode(attrs_in->mode)
-	    & ~op_ctx->fsal_export->exp_ops.fs_umask(op_ctx->fsal_export);
-
-	uint32_t create_mask =
-		RGW_SETATTR_UID | RGW_SETATTR_GID | RGW_SETATTR_MODE;
-
-	rc = rgw_create(export->rgw_fs, dir->rgw_fh, name, &st, create_mask,
-			&rgw_fh, 0 /* posix flags */, RGW_CREATE_FLAG_NONE);
-	if (rc < 0)
-		return rgw2fsal_error(rc);
-
-	rc = construct_handle(export, rgw_fh, &st, &obj);
-	if (rc < 0) {
-		return rgw2fsal_error(rc);
-	}
-
-	*obj_hdl = &obj->handle;
-
-	if (attrs_out != NULL) {
-		posix2fsal_attributes_all(&st, attrs_out);
-	}
-
-
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
 /**
@@ -488,6 +427,7 @@ fsal_status_t rgw_fsal_setattr2(struct fsal_obj_handle *obj_hdl,
 	struct stat st;
 	/* Mask of attributes to set */
 	uint32_t mask = 0;
+	bool reusing_open_state_fd = false;
 
 	struct rgw_export *export =
 		container_of(op_ctx->fsal_export, struct rgw_export, export);
@@ -529,7 +469,8 @@ fsal_status_t rgw_fsal_setattr2(struct fsal_obj_handle *obj_hdl,
 		 */
 		status = fsal_find_fd(NULL, obj_hdl, NULL, &handle->share,
 				bypass, state, FSAL_O_RDWR, NULL, NULL,
-				&has_lock, &closefd, false);
+				&has_lock, &closefd, false,
+				&reusing_open_state_fd);
 
 		if (FSAL_IS_ERROR(status)) {
 			LogFullDebug(COMPONENT_FSAL,
@@ -937,8 +878,15 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 						fsalstat(posix2fsal_error(
 							EEXIST),
 							EEXIST);
+				} else if (attrs_out) {
+					posix2fsal_attributes_all(&st,
+								  attrs_out);
 				}
 			}
+
+		} else if (attrs_out && attrs_out->request_mask &
+			   ATTR_RDATTR_ERR) {
+			attrs_out->valid_mask &= ATTR_RDATTR_ERR;
 		}
 
 		if (!state) {
@@ -1135,12 +1083,8 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 						      state,
 						      attrib_set);
 
-		if (FSAL_IS_ERROR(status)) {
-			/* Release the handle we just allocated. */
-			(*new_obj)->obj_ops.release(*new_obj);
-			*new_obj = NULL;
+		if (FSAL_IS_ERROR(status))
 			goto fileerr;
-		}
 
 		if (attrs_out != NULL) {
 			status = (*new_obj)->obj_ops.getattrs(*new_obj,
@@ -1172,7 +1116,7 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
 		PTHREAD_RWLOCK_wrlock(&(*new_obj)->obj_lock);
 
 		/* Take the share reservation now by updating the counters. */
-		update_share_counters(&handle->share, FSAL_O_CLOSED, openflags);
+		update_share_counters(&obj->share, FSAL_O_CLOSED, openflags);
 
 		PTHREAD_RWLOCK_unlock(&(*new_obj)->obj_lock);
 	}
@@ -1182,14 +1126,18 @@ fsal_status_t rgw_fsal_open2(struct fsal_obj_handle *obj_hdl,
  fileerr:
 
 	/* Close the file we just opened. */
-	(void) rgw_close(export->rgw_fs, handle->rgw_fh,
+	(void) rgw_close(export->rgw_fs, obj->rgw_fh,
 			RGW_CLOSE_FLAG_NONE);
 
 	if (created) {
 		/* Remove the file we just created */
-		(void) rgw_unlink(export->rgw_fs, handle->rgw_fh, name,
+		(void) rgw_unlink(export->rgw_fs, obj->rgw_fh, name,
 				RGW_UNLINK_FLAG_NONE);
 	}
+
+	/* Release the handle we just allocated. */
+	(*new_obj)->obj_ops.release(*new_obj);
+	*new_obj = NULL;
 
 	return status;
 }
@@ -1285,7 +1233,7 @@ fsal_status_t rgw_fsal_reopen2(struct fsal_obj_handle *obj_hdl,
 	PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	/* perform a provider open iff not already open */
-	if (!fsal_is_open(obj_hdl)) {
+	if (true) {
 
 		/* XXX also, how do we know the ULP tracks opens?
 		 * 9P does, V3 does not */
@@ -1425,7 +1373,7 @@ fsal_status_t rgw_fsal_write2(struct fsal_obj_handle *obj_hdl,
 
 	int rc = rgw_write(export->rgw_fs, handle->rgw_fh, offset,
 			buffer_size, wrote_amount, buffer,
-			RGW_WRITE_FLAG_NONE);
+			(!state) ? RGW_OPEN_FLAG_V3 : RGW_OPEN_FLAG_NONE);
 
 	LogFullDebug(COMPONENT_FSAL,
 		"%s post obj_hdl %p state %p returned %d", __func__, obj_hdl,
@@ -1662,7 +1610,6 @@ void handle_ops_init(struct fsal_obj_ops *ops)
 	ops->release = release;
 	ops->merge = rgw_merge;
 	ops->lookup = lookup;
-	ops->create = rgw_fsal_create;
 	ops->mkdir = rgw_fsal_mkdir;
 	ops->readdir = rgw_fsal_readdir;
 #if HAVE_DIRENT_OFFSETOF

@@ -622,11 +622,20 @@ struct fsal_ops {
 	 void (*fsal_pnfs_ds_ops)(struct fsal_pnfs_ds_ops *ops);
 
 /**
- * @brief Indicate support for extended operations.
+ * @brief Provides function to extract FSAL stats
  *
- * @retval true if extended operations are supported.
+ * @param[in] fsal_hdl		FSAL module
+ * @param[in] iter		opaque pointer to DBusMessageIter
  */
-	 bool (*support_ex)(struct fsal_obj_handle *obj);
+	void (*fsal_extract_stats)(struct fsal_module *const fsal_hdl,
+				   void *iter);
+
+/**
+ * @brief FSAL function to reset FSAL stats
+ *
+ * @param[in] fsal_hdl          FSAL module
+ */
+	void (*fsal_reset_stats)(struct fsal_module *const fsal_hdl);
 
 /**
  * @brief Provides function to extract FSAL stats
@@ -1483,43 +1492,6 @@ struct fsal_obj_ops {
  */
 
 /**
- * @brief Create a regular file
- *
- * This function creates a new regular file.
- *
- * This method is obsolete with support_ex.
- *
- * The caller is expected to invoke fsal_release_attrs to release any
- * resources held by the set attributes. The FSAL layer MAY have added an
- * inherited ACL.
- *
- * The caller will set the request_mask in attrs_out to indicate the attributes
- * of interest. ATTR_ACL SHOULD NOT be requested and need not be provided. If
- * not all the requested attributes can be provided, this method MUST return
- * an error unless the ATTR_RDATTR_ERR bit was set in the request_mask.
- *
- * Since this method instantiates a new fsal_obj_handle, it will be forced
- * to fetch at least some attributes in order to even know what the object
- * type is (as well as it's fileid and fsid). For this reason, the operation
- * as a whole can be expected to fail if the attributes were not able to be
- * fetched.
- *
- * @param[in]     dir_hdl   Directory in which to create the file
- * @param[in]     name      Name of file to create
- * @param[in]     attrs_in  Attributes to set on newly created object
- * @param[out]    new_obj   Newly created object
- * @param[in,out] attrs_out Optional attributes for newly created object
- *
- * @note On success, @a new_obj has been ref'd
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*create)(struct fsal_obj_handle *dir_hdl,
-				 const char *name, struct attrlist *attrs_in,
-				 struct fsal_obj_handle **new_obj,
-				 struct attrlist *attrs_out);
-
-/**
  * @brief Create a directory
  *
  * This function creates a new directory.
@@ -1727,28 +1699,6 @@ struct fsal_obj_ops {
 				   struct attrlist *attrs_out);
 
 /**
- * @brief Set attributes on an object
- *
- * This function sets attributes on an object.  Which attributes are
- * set is determined by @c attrib_set->mask.
- *
- * The caller is expected to invoke fsal_release_attrs to release any
- * resources held by the set attributes. The FSAL layer MAY have added an
- * inherited ACL.
- *
- * Due to differences between protocols (9P, NFSv3 and NFSv4) and backends,
- * FSALs may ignore request for modifying the ctime attribute without returning
- * EINVAL or any error status.
- *
- * @param[in] obj_hdl    The object to modify
- * @param[in] attrib_set Attributes to set
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*setattrs)(struct fsal_obj_handle *obj_hdl,
-				   struct attrlist *attrib_set);
-
-/**
  * @brief Create a new link
  *
  * This function creates a new name for an existing object.
@@ -1818,147 +1768,6 @@ struct fsal_obj_ops {
  */
 
 /**
- * @brief Open a file for read or write
- *
- * This function opens a file for read or write.  The file should not
- * already be opened when this function is called.  The thread calling
- * this function will have hold the Cache inode content lock
- * exclusively and the FSAL may assume whatever private state it uses
- * to manage open/close status is protected.
- *
- * @param[in] obj_hdl   File to open
- * @param[in] openflags Mode for open
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*open)(struct fsal_obj_handle *obj_hdl,
-			       fsal_openflags_t openflags);
-
-/**
- * @brief Re-open a file that may be already opened
- *
- * This function reopens the file with the given open flags. You can
- * atomically go from read only flag to readwrite or vice versa.
- * This is used to reopen a file for readwrite, if the file is already
- * opened for readonly. This will not lose any file locks that are
- * already placed. May not be supported by all FSALs.
- */
-	 fsal_status_t (*reopen)(struct fsal_obj_handle *obj_hdl,
-				 fsal_openflags_t openflags);
-
-/**
- * @brief Return open status
- *
- * This function returns open flags representing the current open
- * status.
- *
- * @param[in] obj_hdl File to interrogate
- *
- * @retval Flags representing current open status
- */
-	 fsal_openflags_t (*status)(struct fsal_obj_handle *obj_hdl);
-
-/**
- * @brief Read data from a file
- *
- * This function reads data from the given file.
- *
- * @note We probably want to keep end_of_file.  There may be reasons
- * other than end of file while less data are returned than requested
- * (FSAL_PROXY, for example, might do this depending on the will of
- * the remote server.) -- ACE
- *
- * @param[in]  obj_hdl     File to read
- * @param[in]  offset      Position from which to read
- * @param[in]  buffer_size Amount of data to read
- * @param[out] buffer      Buffer to which data are to be copied
- * @param[out] read_amount Amount of data read
- * @param[out] end_of_file true if the end of file has been reached
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*read)(struct fsal_obj_handle *obj_hdl,
-			       uint64_t offset,
-			       size_t buffer_size,
-			       void *buffer,
-			       size_t *read_amount,
-			       bool *end_of_file);	/* needed? */
-
-/**
- * @brief Read data from a file plus
- *
- * This function reads data from the given file.
- *
- * @note We probably want to keep end_of_file.  There may be reasons
- * other than end of file while less data are returned than requested
- * (FSAL_PROXY, for example, might do this depending on the will of
- * the remote server.) -- ACE
- *
- * @param[in]  obj_hdl     File to read
- * @param[in]  offset      Position from which to read
- * @param[in]  buffer_size Amount of data to read
- * @param[out] buffer      Buffer to which data are to be copied
- * @param[out] read_amount Amount of data read
- * @param[out] end_of_file true if the end of file has been reached
- * @param[in,out] info     more information about the data
- *
- * @return FSAL status.
- */
-	fsal_status_t (*read_plus)(struct fsal_obj_handle *obj_hdl,
-				   uint64_t offset,
-				   size_t buffer_size,
-				   void *buffer,
-				   size_t *read_amount,
-				   bool *end_of_file,
-				   struct io_info *info);
-
-/**
- * @brief Write data to a file
- *
- * This function writes data to a file.
- *
- * @note Should buffer be const? -- ACE
- *
- * @param[in]  obj_hdl      File to be written
- * @param[in]  offset       Position at which to write
- * @param[in]  buffer       Data to be written
- * @param[in,out] fsal_stable In, if on, the fsal is requested to write data
- *                            to stable store. Out, the fsal reports what
- *                            it did.
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*write)(struct fsal_obj_handle *obj_hdl,
-				uint64_t offset,
-				size_t buffer_size,
-				void *buffer,
-				size_t *wrote_amount,
-				bool *fsal_stable);
-/**
- * @brief Write data to a file plus
- *
- * This function writes data to a file.
- *
- * @note Should buffer be const? -- ACE
- *
- * @param[in]  obj_hdl      File to be written
- * @param[in]  offset       Position at which to write
- * @param[in]  buffer       Data to be written
- * @param[in,out] fsal_stable In, if on, the fsal is requested to write data
- *                            to stable store. Out, the fsal reports what
- *                            it did.
- * @param[in,out] info     more information about the data
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*write_plus)(struct fsal_obj_handle *obj_hdl,
-				     uint64_t offset,
-				     size_t buffer_size,
-				     void *buffer,
-				     size_t *wrote_amount,
-				     bool *fsal_stable,
-				     struct io_info *info);
-/**
  * @brief Seek to data or hole
  *
  * This function seek to data or hole in a file.
@@ -1982,55 +1791,7 @@ struct fsal_obj_ops {
  */
 	 fsal_status_t (*io_advise)(struct fsal_obj_handle *obj_hdl,
 				    struct io_hints *hints);
-/**
- * @brief Commit written data
- *
- * This function flushes possibly buffered data to a file.
- *
- * @param[in] obj_hdl File to commit
- * @param[in] offset  Start of range to commit
- * @param[in] len     Length of range to commit
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*commit)(struct fsal_obj_handle *obj_hdl,  /* sync */
-				 off_t offset, size_t len);
 
-/**
- * @brief Perform a lock operation
- *
- * This function performs a lock operation (lock, unlock, test) on a
- * file.
- *
- * @param[in]  obj_hdl          File on which to operate
- * @param[in]  owner            Lock owner (Not yet implemented)
- * @param[in]  lock_op          Operation to perform
- * @param[in]  request_lock     Lock to take/release/test
- * @param[out] conflicting_lock Conflicting lock
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*lock_op)(struct fsal_obj_handle *obj_hdl,
-				  void *owner,
-				  fsal_lock_op_t lock_op,
-				  fsal_lock_param_t *request_lock,
-				  fsal_lock_param_t *conflicting_lock);
-
-/**
- * @brief Handle share reservations
- *
- * This function handles acquiring and releasing Microsoft share
- * reservations.
- *
- * @param[in] obj_hdl       Handle on which to operate
- * @param[in] owner         Share owner
- * @param[in] request_share Share reservation requested
- *
- * @return FSAL status.
- */
-	 fsal_status_t (*share_op)(struct fsal_obj_handle *obj_hdl,
-				   void *owner,
-				   fsal_share_param_t request_share);
 /**
  * @brief Close a file
  *
@@ -2700,6 +2461,23 @@ struct fsal_obj_ops {
 				   fsal_lock_param_t *conflicting_lock);
 
 /**
+ * @brief Acquire or Release delegation
+ *
+ * This functions acquires/releases delegation/lease_lock.
+ *
+ * @param[in]  obj_hdl          File on which to operate
+ * @param[in]  state            state_t to use for this operation
+ * @param[in]  owner            Opaque state owner token
+ * @param[in]  deleg            Requested delegation state
+ *
+ * @return FSAL status.
+ */
+	 fsal_status_t (*lease_op2)(struct fsal_obj_handle *obj_hdl,
+				    struct state_t *state,
+				    void *owner,
+				    fsal_deleg_t deleg);
+
+/**
  * @brief Set attributes on an object
  *
  * This function sets attributes on an object.  Which attributes are
@@ -3176,22 +2954,29 @@ enum pnfs_ds_status {
 	PNFS_DS_STALE,			/*< is no longer valid */
 };
 
+/**
+ * @brief PNFS Data Server
+ *
+ * This represents a Data Server for PNFS.  It may be stand-alone, or may be
+ * associated with an export (which represents an MDS).
+ */
 struct fsal_pnfs_ds {
-	struct glist_head server;	/*< Link in list of Data Servers under
+	struct glist_head ds_list;	/**< Entry in list of all DSs */
+	struct glist_head server;	/**< Link in list of Data Servers under
 					   the same FSAL. */
-	struct glist_head ds_handles;	/*< Head of list of DS handles */
-	struct fsal_module *fsal;	/*< Link back to fsal module */
-	struct fsal_pnfs_ds_ops s_ops;	/*< Operations vector */
-	struct gsh_export *mds_export;	/*< related export */
-	struct fsal_export *mds_fsal_export;	/*< related FSAL export (avoids
+	struct glist_head ds_handles;	/**< Head of list of DS handles */
+	struct fsal_module *fsal;	/**< Link back to fsal module */
+	struct fsal_pnfs_ds_ops s_ops;	/**< Operations vector */
+	struct gsh_export *mds_export;	/**< related export */
+	struct fsal_export *mds_fsal_export;	/**< related FSAL export (avoids
 						  MDS stacking) */
 
-	struct avltree_node ds_node;	/*< Node in tree of all Data Servers. */
-	pthread_rwlock_t lock;		/*< Lock to be held when
+	struct avltree_node ds_node;	/**< Node in tree of all Data Servers */
+	pthread_rwlock_t lock;		/**< Lock to be held when
 					    manipulating its list (above). */
-	int32_t refcount;		/*< Reference count */
-	uint16_t id_servers;		/*< Identifier */
-	uint8_t pnfs_ds_status;		/*< current condition */
+	int32_t refcount;		/**< Reference count */
+	uint16_t id_servers;		/**< Identifier */
+	uint8_t pnfs_ds_status;		/**< current condition */
 };
 
 /**

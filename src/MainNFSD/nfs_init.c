@@ -92,13 +92,24 @@ verifier4 NFS4_write_verifier;	/* NFS V4 write verifier */
 writeverf3 NFS3_write_verifier;	/* NFS V3 write verifier */
 
 /* node ID used to identify an individual node in a cluster */
-int g_nodeid = 0;
+int g_nodeid;
 
 nfs_start_info_t nfs_start_info;
 
 pthread_t admin_thrid;
 pthread_t sigmgr_thrid;
-pthread_t gsh_dbus_thrid;
+
+tirpc_pkg_params ntirpc_pp = {
+	TIRPC_DEBUG_FLAG_DEFAULT,
+	0,
+	SetNameFunction,
+	(mem_format_t)rpc_warnx,
+	gsh_free_size,
+	gsh_malloc__,
+	gsh_malloc_aligned__,
+	gsh_calloc__,
+	gsh_realloc__,
+};
 
 #ifdef _USE_9P
 pthread_t _9p_dispatcher_thrid;
@@ -130,12 +141,13 @@ char *pidfile_path = GANESHA_PIDFILE_PATH;
  *
  */
 
+struct config_error_type err_type;
+
 void reread_config(void)
 {
 	int status = 0;
 	int i;
 	config_file_t config_struct;
-	struct config_error_type err_type;
 
 	/* Clear out the flag indicating component was set from environment. */
 	for (i = COMPONENT_ALL; i < COMPONENT_COUNT; i++)
@@ -298,6 +310,11 @@ void nfs_prereq_init(char *program_name, char *host_name, int debug_level,
 	if (dump_trace) {
 		init_crash_handlers();
 	}
+
+	/* Redirect TI-RPC allocators, log channel */
+	if (!tirpc_control(TIRPC_PUT_PARAMETERS, &ntirpc_pp)) {
+		LogFatal(COMPONENT_INIT, "Setting nTI-RPC parameters failed");
+	}
 }
 
 /**
@@ -330,10 +347,6 @@ void nfs_print_param_config(void)
 	printf("\tDRC_UDP_Hiwat = %u ;\n", nfs_param.core_param.drc.udp.hiwat);
 	printf("\tDRC_UDP_Checksum = %u ;\n",
 	       nfs_param.core_param.drc.udp.checksum);
-	printf("\tDecoder_Fridge_Expiration_Delay = %" PRIu64 " ;\n",
-	       (uint64_t) nfs_param.core_param.decoder_fridge_expiration_delay);
-	printf("\tDecoder_Fridge_Block_Timeout = %" PRIu64 " ;\n",
-	       (uint64_t) nfs_param.core_param.decoder_fridge_block_timeout);
 	printf("\tBlocked_Lock_Poller_Interval = %" PRIu64 " ;\n",
 	       (uint64_t) nfs_param.core_param.blocked_lock_poller_interval);
 
@@ -445,6 +458,11 @@ int nfs_set_param_from_conf(config_file_t parse_tree,
 	if (mdcache_set_param_from_conf(parse_tree, err_type) < 0)
 		return -1;
 
+#ifdef USE_RADOS_RECOV
+	if (rados_kv_set_param_from_conf(parse_tree, err_type) < 0)
+		return -1;
+#endif
+
 	LogEvent(COMPONENT_INIT, "Configuration file successfully parsed");
 
 	return 0;
@@ -526,16 +544,13 @@ static void nfs_Start_threads(void)
 	}
 	LogDebug(COMPONENT_THREAD, "sigmgr thread started");
 
+#ifdef _USE_9P
 	rc = worker_init();
 	if (rc != 0) {
 		LogFatal(COMPONENT_THREAD, "Could not start worker threads: %d",
 			 errno);
 	}
 
-	/* Start event channel service threads */
-	nfs_rpc_dispatch_threads(&attr_thr);
-
-#ifdef _USE_9P
 	/* Starting the 9P/TCP dispatcher thread */
 	if (nfs_param.core_param.core_options & CORE_OPTION_9P) {
 		rc = pthread_create(&_9p_dispatcher_thrid, &attr_thr,
@@ -563,20 +578,6 @@ static void nfs_Start_threads(void)
 		LogEvent(COMPONENT_THREAD,
 			 "9P/RDMA dispatcher thread was started successfully");
 	}
-#endif
-
-#ifdef _USE_NFS_RDMA
-	/* Starting the NFS/RDMA dispatcher thread */
-	rc = pthread_create(&nfs_rdma_dispatcher_thrid, &attr_thr,
-			    nfs_rdma_dispatcher_thread, NULL);
-
-	if (rc != 0) {
-		LogFatal(COMPONENT_THREAD,
-			 "Could not create NFS/RDMA dispatcher, error = %d (%s)",
-			 errno, strerror(errno));
-	}
-	LogEvent(COMPONENT_THREAD,
-		 "NFS/RDMA dispatcher thread was started successfully");
 #endif
 
 #ifdef USE_DBUS
@@ -663,10 +664,8 @@ static void nfs_Init(const nfs_start_info_t *p_start_info)
 		OM_uint32 gss_status = GSS_S_COMPLETE;
 
 		if (*nfs_param.krb5_param.keytab != '\0')
-			gss_status =
-			    krb5_gss_register_acceptor_identity(nfs_param.
-								krb5_param.
-								keytab);
+			gss_status = krb5_gss_register_acceptor_identity(
+						nfs_param.krb5_param.keytab);
 
 		if (gss_status != GSS_S_COMPLETE) {
 			log_sperror_gss(GssError, gss_status, 0);
@@ -820,13 +819,10 @@ static void nfs_Init(const nfs_start_info_t *p_start_info)
 	/* Create stable storage directory, this needs to be done before
 	 * starting the recovery thread.
 	 */
-	nfs4_create_recov_dir();
-
-	/* read in the client IDs */
-	nfs4_load_recov_clids(NULL);
+	nfs4_recovery_init();
 
 	/* Start grace period */
-	nfs4_start_grace(NULL);
+	nfs_start_grace(NULL);
 
 	/* callback dispatch */
 	nfs_rpc_cb_pkginit();
@@ -855,6 +851,11 @@ static void lower_my_caps(void)
 	cap_t my_cap;
 	char *cap_text;
 	int capsz;
+
+	if (!nfs_start_info.drop_caps) {
+		/* Skip dropping caps by request */
+		return;
+	}
 
 	(void) capget(&caphdr, NULL);
 	switch (caphdr.version) {
@@ -969,9 +970,8 @@ void nfs_start(nfs_start_info_t *p_start_info)
 	/* Regular exit */
 	LogEvent(COMPONENT_MAIN, "NFS EXIT: regular exit");
 
-	/* if not in grace period, clean up the old state directory */
-	if (!nfs_in_grace())
-		nfs4_clean_old_recov_dir(v4_old_dir);
+	/* Try to lift the grace period */
+	nfs_try_lift_grace();
 
 	Cleanup();
 

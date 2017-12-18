@@ -220,11 +220,6 @@ static fsal_status_t pxy_init_config(struct fsal_module *fsal_hdl,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
-static bool pxy_support_ex(struct fsal_obj_handle *obj)
-{
-	return true;
-}
-
 static struct pxy_fsal_module PROXY;
 
 MODULE_INIT void pxy_init(void)
@@ -234,7 +229,6 @@ MODULE_INIT void pxy_init(void)
 		return;
 	PROXY.module.m_ops.init_config = pxy_init_config;
 	PROXY.module.m_ops.create_export = pxy_create_export;
-	PROXY.module.m_ops.support_ex = pxy_support_ex;
 }
 
 MODULE_FINI void pxy_unload(void)
@@ -242,8 +236,17 @@ MODULE_FINI void pxy_unload(void)
 	int retval;
 
 	retval = unregister_fsal(&PROXY.module);
+
 	if (retval != 0) {
-		fprintf(stderr, "PROXY module failed to unregister");
+		fprintf(stderr, "PROXY module failed to unregister : %d",
+			retval);
+		return;
+	}
+
+	retval = pxy_close_thread();
+	if (retval != 0) {
+		fprintf(stderr, "PROXY module failed to wait threads : %d",
+			retval);
 		return;
 	}
 }

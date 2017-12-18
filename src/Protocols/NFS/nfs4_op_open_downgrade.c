@@ -61,9 +61,11 @@ int nfs4_op_open_downgrade(struct nfs_argop4 *op, compound_data_t *data,
 			   struct nfs_resop4 *resp)
 {
 	OPEN_DOWNGRADE4args * const arg_OPEN_DOWNGRADE4 =
-	    &op->nfs_argop4_u.opopen_downgrade;
+		&op->nfs_argop4_u.opopen_downgrade;
 	OPEN_DOWNGRADE4res * const res_OPEN_DOWNGRADE4 =
-	    &resp->nfs_resop4_u.opopen_downgrade;
+		&resp->nfs_resop4_u.opopen_downgrade;
+	OPEN_DOWNGRADE4resok *resok =
+		&res_OPEN_DOWNGRADE4->OPEN_DOWNGRADE4res_u.resok4;
 	state_t *state_found = NULL;
 	state_owner_t *open_owner;
 	int rc;
@@ -152,11 +154,7 @@ int nfs4_op_open_downgrade(struct nfs_argop4 *op, compound_data_t *data,
 	res_OPEN_DOWNGRADE4->status = NFS4_OK;
 
 	/* Handle stateid/seqid for success */
-	update_stateid(state_found,
-		       &res_OPEN_DOWNGRADE4->OPEN_DOWNGRADE4res_u.resok4.
-		       open_stateid,
-		       data,
-		       tag);
+	update_stateid(state_found, &resok->open_stateid, data, tag);
 
 	/* Save the response in the open owner */
 	if (data->minorversion == 0) {
@@ -205,6 +203,8 @@ static nfsstat4 nfs4_do_open_downgrade(struct nfs_argop4 *op,
 {
 	state_status_t state_status;
 	OPEN_DOWNGRADE4args *args = &op->nfs_argop4_u.opopen_downgrade;
+	fsal_status_t fsal_status;
+	fsal_openflags_t openflags = 0;
 
 	LogFullDebug(COMPONENT_STATE,
 		     "Open downgrade current access=%x deny=%x access_prev=%x deny_prev=%x",
@@ -255,40 +255,25 @@ static nfsstat4 nfs4_do_open_downgrade(struct nfs_argop4 *op,
 		return NFS4ERR_INVAL;
 	}
 
-	if (data->current_obj->fsal->m_ops.support_ex(data->current_obj)) {
-		fsal_status_t fsal_status;
-		fsal_openflags_t openflags = 0;
+	if ((args->share_access & OPEN4_SHARE_ACCESS_READ) != 0)
+		openflags |= FSAL_O_READ;
 
-		if ((args->share_access & OPEN4_SHARE_ACCESS_READ) != 0)
-			openflags |= FSAL_O_READ;
+	if ((args->share_access & OPEN4_SHARE_ACCESS_WRITE) != 0)
+		openflags |= FSAL_O_WRITE;
 
-		if ((args->share_access & OPEN4_SHARE_ACCESS_WRITE) != 0)
-			openflags |= FSAL_O_WRITE;
+	if ((args->share_deny & OPEN4_SHARE_DENY_READ) != 0)
+		openflags |= FSAL_O_DENY_READ;
 
-		if ((args->share_deny & OPEN4_SHARE_DENY_READ) != 0)
-			openflags |= FSAL_O_DENY_READ;
-
-		if ((args->share_deny & OPEN4_SHARE_DENY_WRITE) != 0)
-			openflags |= FSAL_O_DENY_WRITE_MAND;
+	if ((args->share_deny & OPEN4_SHARE_DENY_WRITE) != 0)
+		openflags |= FSAL_O_DENY_WRITE_MAND;
 
 
-		fsal_status = fsal_reopen2(data->current_obj,
-					   state,
-					   openflags,
-					   true);
+	fsal_status = fsal_reopen2(data->current_obj,
+				   state,
+				   openflags,
+				   true);
 
-		state_status = state_error_convert(fsal_status);
-	} else {
-		union state_data candidate_data;
-
-		candidate_data.share.share_access = args->share_access;
-		candidate_data.share.share_deny = args->share_deny;
-
-		state_status = state_share_downgrade(data->current_obj,
-						     &candidate_data,
-						     owner,
-						     state);
-	}
+	state_status = state_error_convert(fsal_status);
 
 	PTHREAD_RWLOCK_unlock(&data->current_obj->state_hdl->state_lock);
 

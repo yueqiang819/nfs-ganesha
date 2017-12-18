@@ -1,3 +1,9 @@
+if(USE_DBUS)
+  include_directories(
+    ${DBUS_INCLUDE_DIRS}
+    )
+endif(USE_DBUS)
+
 include_directories("${PROJECT_SOURCE_DIR}/FSAL/FSAL_GPFS")
 
 ########### next target ###############
@@ -17,11 +23,11 @@ SET(fsalgpfs_LIB_SRCS
   fsal_fileop.c
   fsal_attrs.c
   fsal_lock.c
-  fsal_share.c
   fsal_lookup.c
   fsal_convert.c
   fsal_internal.c
   gpfsext.c
+  fsal_stats_gpfs.c
 )
 
 add_library(fsalgpfs MODULE ${fsalgpfs_LIB_SRCS})

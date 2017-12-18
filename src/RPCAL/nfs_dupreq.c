@@ -48,7 +48,7 @@
 #include "city.h"
 #include "abstract_mem.h"
 #include "gsh_intrinsic.h"
-#include "wait_queue.h"
+#include "gsh_wait_queue.h"
 
 #define DUPREQ_BAD_ADDR1 0x01	/* safe for marked pointers, etc */
 #define DUPREQ_NOCACHE   0x02
@@ -329,6 +329,7 @@ static inline unsigned int get_ipproto_by_xprt(SVCXPRT *xprt)
 {
 	switch (xprt->xp_type) {
 	case XPRT_UDP:
+	case XPRT_UDP_RENDEZVOUS:
 		return IPPROTO_UDP;
 	case XPRT_TCP:
 	case XPRT_TCP_RENDEZVOUS:
@@ -490,9 +491,8 @@ static inline void drc_free_expired(void)
 				LogCrit(COMPONENT_DUPREQ,
 					"BUG: asked to dequeue DRC not on queue");
 			} else {
-				(void)opr_rbtree_remove(&t->t,
-							&drc->d_u.tcp.
-							recycle_k);
+				(void)opr_rbtree_remove(
+						&t->t, &drc->d_u.tcp.recycle_k);
 			}
 			TAILQ_REMOVE(&drc_st->tcp_drc_recycle_q, drc,
 				     d_u.tcp.recycle_q);
@@ -1104,8 +1104,7 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 
 			LogFullDebug(COMPONENT_DUPREQ,
 				     "starting dk=%p xid=%" PRIu32
-				     " on DRC=%p state=%s, status=%s, "
-				     "refcnt=%d, drc->size=%d",
+				     " on DRC=%p state=%s, status=%s, refcnt=%d, drc->size=%d",
 				     dk, dk->hin.tcp.rq_xid, drc,
 				     dupreq_state_table[dk->state],
 				     dupreq_status_table[status],
@@ -1256,8 +1255,8 @@ dq_again:
  *
  * @brief Remove an entry (request) from a duplicate request cache.
  *
- * The expected pattern is that nfs_rpc_execute shall delete requests only
- * in error conditions.  The refcnt of the corresponding duplicate request
+ * The expected pattern is that nfs_rpc_process_request shall delete requests
+ * only in error conditions.  The refcnt of the corresponding duplicate request
  * entry is unchanged (ie., the caller must still call nfs_dupreq_rele).
  *
  * We assert req->rq_u1 now points to the corresonding duplicate request
@@ -1351,7 +1350,7 @@ void nfs_dupreq_rele(struct svc_req *req, const nfs_function_desc_t *func)
  out:
 	/* dispose RPC header */
 	if (req->rq_auth)
-		SVCAUTH_RELEASE(req->rq_auth, req);
+		SVCAUTH_RELEASE(req);
 }
 
 /**

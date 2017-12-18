@@ -1107,6 +1107,14 @@ fsal_status_t ceph_open2(struct fsal_obj_handle *obj_hdl,
 				status =
 				    fsalstat(posix2fsal_error(EEXIST), EEXIST);
 			}
+
+			if (attrs_out) {
+				/* Save out new attributes */
+				ceph2fsal_attributes(&stx, attrs_out);
+			}
+		} else if (attrs_out && attrs_out->request_mask &
+			   ATTR_RDATTR_ERR) {
+			attrs_out->valid_mask &= ATTR_RDATTR_ERR;
 		}
 
 		if (state == NULL) {
@@ -1305,12 +1313,8 @@ fsal_status_t ceph_open2(struct fsal_obj_handle *obj_hdl,
 						      state,
 						      attrib_set);
 
-		if (FSAL_IS_ERROR(status)) {
-			/* Release the handle we just allocated. */
-			(*new_obj)->obj_ops.release(*new_obj);
-			*new_obj = NULL;
+		if (FSAL_IS_ERROR(status))
 			goto fileerr;
-		}
 
 		if (attrs_out != NULL) {
 			status = (*new_obj)->obj_ops.getattrs(*new_obj,
@@ -1354,6 +1358,10 @@ fsal_status_t ceph_open2(struct fsal_obj_handle *obj_hdl,
 	/* Close the file we just opened. */
 	(void) ceph_close_my_fd(container_of(*new_obj, struct handle, handle),
 				my_fd);
+
+	/* Release the handle we just allocated. */
+	(*new_obj)->obj_ops.release(*new_obj);
+	*new_obj = NULL;
 
 	if (created) {
 		/* Remove the file we just created */
@@ -1478,12 +1486,14 @@ fsal_status_t ceph_find_fd(Fh **fd,
 	struct handle *myself = container_of(obj_hdl, struct handle, handle);
 	struct ceph_fd temp_fd = {0, NULL}, *out_fd = &temp_fd;
 	fsal_status_t status = {ERR_FSAL_NO_ERROR, 0};
+	bool reusing_open_state_fd = false;
 
 	status = fsal_find_fd((struct fsal_fd **)&out_fd, obj_hdl,
 			      (struct fsal_fd *)&myself->fd, &myself->share,
 			      bypass, state, openflags,
 			      ceph_open_func, ceph_close_func,
-			      has_lock, closefd, open_for_locks);
+			      has_lock, closefd, open_for_locks,
+			      &reusing_open_state_fd);
 
 	LogFullDebug(COMPONENT_FSAL,
 		     "fd = %p", out_fd->fd);
@@ -1854,23 +1864,22 @@ fsal_status_t ceph_lock_op2(struct fsal_obj_handle *obj_hdl,
 			 -retval, strerror(-retval));
 
 		if (conflicting_lock != NULL) {
+			int retval2;
+
 			/* Get the conflicting lock */
-			retval = ceph_ll_getlk(export->cmount, my_fd,
+			retval2 = ceph_ll_getlk(export->cmount, my_fd,
 					       &lock_args, (uint64_t) owner);
 
-			if (retval < 0) {
+			if (retval2 < 0) {
 				LogCrit(COMPONENT_FSAL,
 					"After failing a lock request, I couldn't even get the details of who owns the lock, error %d %s",
-					-retval, strerror(-retval));
+					-retval2, strerror(-retval2));
 				goto err;
 			}
 
-			if (conflicting_lock != NULL) {
-				conflicting_lock->lock_length = lock_args.l_len;
-				conflicting_lock->lock_start =
-				    lock_args.l_start;
-				conflicting_lock->lock_type = lock_args.l_type;
-			}
+			conflicting_lock->lock_length = lock_args.l_len;
+			conflicting_lock->lock_start = lock_args.l_start;
+			conflicting_lock->lock_type = lock_args.l_type;
 		}
 
 		goto err;
@@ -1893,6 +1902,76 @@ fsal_status_t ceph_lock_op2(struct fsal_obj_handle *obj_hdl,
 
  err:
 
+	if (closefd)
+		(void) ceph_ll_close(myself->export->cmount, my_fd);
+
+	if (has_lock)
+		PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
+
+	return ceph2fsal_error(retval);
+}
+#endif
+
+#ifdef USE_FSAL_CEPH_LL_DELEGATION
+static void ceph_deleg_cb(Fh *fh, void *vhdl)
+{
+	fsal_status_t fsal_status;
+	struct fsal_obj_handle *obj_hdl = vhdl;
+	struct handle *hdl = container_of(obj_hdl, struct handle, handle);
+	struct gsh_buffdesc key = {
+		.addr = &hdl->vi,
+		.len = sizeof(vinodeno_t)
+	};
+
+	LogDebug(COMPONENT_FSAL, "Recalling delegations on %p", hdl);
+
+	fsal_status = up_async_delegrecall(general_fridge, hdl->up_ops, &key,
+						NULL, NULL);
+	if (FSAL_IS_ERROR(fsal_status))
+		LogCrit(COMPONENT_FSAL,
+			"Unable to queue delegrecall for 0x%p: %s",
+			hdl, fsal_err_txt(fsal_status));
+}
+
+static fsal_status_t ceph_lease_op2(struct fsal_obj_handle *obj_hdl,
+				     state_t *state,
+				     void *owner, fsal_deleg_t deleg)
+{
+	struct handle *myself = container_of(obj_hdl, struct handle, handle);
+	fsal_status_t status = {0, 0};
+	int retval = 0;
+	Fh *my_fd = NULL;
+	unsigned int cmd;
+	bool has_lock = false;
+	bool closefd = false;
+	bool bypass = false;
+	fsal_openflags_t openflags = FSAL_O_READ;
+
+	switch (deleg) {
+	case FSAL_DELEG_NONE:
+		cmd = CEPH_DELEGATION_NONE;
+		break;
+	case FSAL_DELEG_RD:
+		cmd = CEPH_DELEGATION_RD;
+		break;
+	case FSAL_DELEG_WR:
+		/* No write delegations (yet!) */
+		return ceph2fsal_error(-ENOTSUP);
+	default:
+		LogCrit(COMPONENT_FSAL, "Unknown requested lease state");
+		return ceph2fsal_error(-EINVAL);
+	};
+
+	/* Get a usable file descriptor */
+	status = ceph_find_fd(&my_fd, obj_hdl, bypass, state, openflags,
+			      &has_lock, &closefd, false);
+	if (FSAL_IS_ERROR(status)) {
+		LogCrit(COMPONENT_FSAL, "Unable to find fd for lease op");
+		return status;
+	}
+
+	retval = ceph_ll_delegation(myself->export->cmount, my_fd, cmd,
+				    ceph_deleg_cb, obj_hdl);
 	if (closefd)
 		(void) ceph_ll_close(myself->export->cmount, my_fd);
 
@@ -1932,6 +2011,7 @@ fsal_status_t ceph_setattr2(struct fsal_obj_handle *obj_hdl,
 	struct ceph_statx stx;
 	/* Mask of attributes to set */
 	uint32_t mask = 0;
+	bool reusing_open_state_fd = false;
 
 	if (attrib_set->valid_mask & ~CEPH_SETTABLE_ATTRIBUTES) {
 		LogDebug(COMPONENT_FSAL,
@@ -1964,7 +2044,8 @@ fsal_status_t ceph_setattr2(struct fsal_obj_handle *obj_hdl,
 		 */
 		status = fsal_find_fd(NULL, obj_hdl, NULL, &myself->share,
 				      bypass, state, FSAL_O_RDWR, NULL, NULL,
-				      &has_lock, &closefd, false);
+				      &has_lock, &closefd, false,
+				      &reusing_open_state_fd);
 
 		if (FSAL_IS_ERROR(status)) {
 			LogFullDebug(COMPONENT_FSAL,
@@ -2206,6 +2287,9 @@ void handle_ops_init(struct fsal_obj_ops *ops)
 	ops->commit2 = ceph_commit2;
 #ifdef USE_FSAL_CEPH_SETLK
 	ops->lock_op2 = ceph_lock_op2;
+#endif
+#ifdef USE_FSAL_CEPH_LL_DELEGATION
+	ops->lease_op2 = ceph_lease_op2;
 #endif
 	ops->setattr2 = ceph_setattr2;
 	ops->close2 = ceph_close2;

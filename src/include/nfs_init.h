@@ -39,6 +39,7 @@
 typedef struct __nfs_start_info {
 	int dump_default_config;
 	int lw_mark_trigger;
+	bool drop_caps;
 } nfs_start_info_t;
 
 struct nfs_init {
@@ -48,6 +49,8 @@ struct nfs_init {
 };
 
 extern struct nfs_init nfs_init;
+
+pthread_t gsh_dbus_thrid;
 
 void nfs_init_init(void);
 void nfs_init_complete(void);
@@ -107,12 +110,13 @@ static inline void nfs_check_malloc(void)
 
 /* in nfs_rpc_dispatcher_thread.c */
 
-enum xprt_stat thr_decode_rpc_request(void *context, SVCXPRT *xprt);
+int free_nfs_request(request_data_t *);
 
-#ifdef _USE_NFS_RDMA
-/* in nfs_rpc_rdma.c */
+/* in nfs_worker_thread.c */
 
-void *nfs_rdma_dispatcher_thread(void *nullarg);
-#endif
+enum xprt_stat nfs_rpc_valid_NFS(struct svc_req *);
+enum xprt_stat nfs_rpc_valid_NLM(struct svc_req *);
+enum xprt_stat nfs_rpc_valid_MNT(struct svc_req *);
+enum xprt_stat nfs_rpc_valid_RQUOTA(struct svc_req *);
 
 #endif				/* !NFS_INIT_H */

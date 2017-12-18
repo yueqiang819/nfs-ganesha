@@ -40,6 +40,7 @@
 #include "idmapper.h"
 #include "delayed_exec.h"
 #include "export_mgr.h"
+#include "pnfs_utils.h"
 #include "fsal.h"
 #include "netgroup_cache.h"
 #ifdef USE_DBUS
@@ -136,7 +137,7 @@ static bool admin_dbus_grace(DBusMessageIter *args,
 		success = false;
 		goto out;
 	}
-	if (DBUS_TYPE_STRING != dbus_message_iter_get_arg_type(args)) {
+	if (dbus_message_iter_get_arg_type(args) != DBUS_TYPE_STRING) {
 		errormsg = "Grace period arg 1 not a string.";
 		success = false;
 		LogWarn(COMPONENT_DBUS, "%s", errormsg);
@@ -163,7 +164,7 @@ static bool admin_dbus_grace(DBusMessageIter *args,
 		if (gsp.event == EVENT_TAKE_NODEID)
 			gsp.nodeid = atoi(gsp.ipaddr);
 	}
-	nfs4_start_grace(&gsp);
+	nfs_start_grace(&gsp);
  out:
 	dbus_status_reply(&iter, success, errormsg);
 	return success;
@@ -287,6 +288,40 @@ static struct gsh_dbus_method method_purge_netgroups = {
 };
 
 /**
+ * @brief Dbus method for flushing idmapper cache
+ *
+ * @param[in]  args
+ * @param[out] reply
+ */
+static bool admin_dbus_purge_idmapper_cache(DBusMessageIter *args,
+					    DBusMessage *reply,
+					    DBusError *error)
+{
+	char *errormsg = "Purge idmapper cache";
+	bool success = true;
+	DBusMessageIter iter;
+
+	dbus_message_iter_init_append(reply, &iter);
+	if (args != NULL) {
+		errormsg = "Purge idmapper takes no arguments.";
+		success = false;
+		LogWarn(COMPONENT_DBUS, "%s", errormsg);
+		goto out;
+	}
+	idmapper_clear_cache();
+ out:
+	dbus_status_reply(&iter, success, errormsg);
+	return success;
+}
+
+static struct gsh_dbus_method method_purge_idmapper_cache = {
+	.name = "purge_idmapper_cache",
+	.method = admin_dbus_purge_idmapper_cache,
+	.args = {STATUS_REPLY,
+		 END_ARG_LIST}
+};
+
+/**
  * @brief Dbus method for updating open fd limit
  *
  * @param[in]  args
@@ -330,6 +365,7 @@ static struct gsh_dbus_method *admin_methods[] = {
 	&method_purge_gids,
 	&method_purge_netgroups,
 	&method_init_fds_limit,
+	&method_purge_idmapper_cache,
 	NULL
 };
 
@@ -416,32 +452,13 @@ static void do_shutdown(void)
 			 "State asynchronous request system shut down.");
 	}
 
-	LogEvent(COMPONENT_MAIN, "Stopping request listener threads.");
-	nfs_rpc_dispatch_stop();
-
 	LogEvent(COMPONENT_MAIN, "Unregistering ports used by NFS service");
 	/* finalize RPC package */
 	Clean_RPC();
 
-	LogEvent(COMPONENT_MAIN, "Stopping request decoder threads");
-	rc = fridgethr_sync_command(req_fridge, fridgethr_comm_stop, 120);
-
-	if (rc == ETIMEDOUT) {
-		LogMajor(COMPONENT_THREAD,
-			 "Shutdown timed out, cancelling threads!");
-		fridgethr_cancel(req_fridge);
-		disorderly = true;
-	} else if (rc != 0) {
-		LogMajor(COMPONENT_THREAD,
-			 "Failed to shut down the request thread fridge: %d!",
-			 rc);
-		disorderly = true;
-	} else {
-		LogEvent(COMPONENT_THREAD, "Request threads shut down.");
-	}
-
 	LogEvent(COMPONENT_MAIN, "Stopping worker threads");
 
+#ifdef _USE_9P
 	rc = worker_shutdown();
 
 	if (rc != 0) {
@@ -452,6 +469,7 @@ static void do_shutdown(void)
 		LogEvent(COMPONENT_THREAD,
 			 "Worker threads successfully shut down.");
 	}
+#endif
 
 	rc = general_fridge_shutdown();
 	if (rc != 0) {
@@ -473,6 +491,9 @@ static void do_shutdown(void)
 
 	LogEvent(COMPONENT_MAIN, "Removing all exports.");
 	remove_all_exports();
+
+	LogEvent(COMPONENT_MAIN, "Removing all DSs.");
+	remove_all_dss();
 
 	(void)svc_shutdown(SVC_SHUTDOWN_FLAG_NONE);
 

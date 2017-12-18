@@ -48,9 +48,6 @@ Requires: openSUSE-release
 @BCOND_GPFS@ gpfs
 %global use_fsal_gpfs %{on_off_switch gpfs}
 
-@BCOND_ZFS@ zfs
-%global use_fsal_zfs %{on_off_switch zfs}
-
 @BCOND_XFS@ xfs
 %global use_fsal_xfs %{on_off_switch xfs}
 
@@ -86,7 +83,13 @@ Requires: openSUSE-release
 @BCOND_MAN_PAGE@ man_page
 %global use_man_page %{on_off_switch man_page}
 
-%global dev_version %{lua: s = string.gsub('@GANESHA_EXTRA_VERSION@', '^%-', ''); s2 = string.gsub(s, '%-', '.'); print(s2) }
+@BCOND_RADOS_RECOV@ rados_recov
+%global use_rados_recov %{on_off_switch rados_recov}
+
+@BCOND_RADOS_URLS@ rados_urls
+%global use_rados_urls %{on_off_switch rados_urls}
+
+%global dev_version %{lua: s = string.gsub('@GANESHA_EXTRA_VERSION@', '^%-', ''); s2 = string.gsub(s, '%-', '.'); print((s2 ~= nil and s2 ~= '') and s2 or "0.1") }
 
 %define sourcename @CPACK_SOURCE_PACKAGE_FILE_NAME@
 
@@ -238,6 +241,18 @@ This package contains the libganesha_trace.so library. When preloaded
 to the ganesha.nfsd server, it makes it possible to trace using LTTng.
 %endif
 
+%if %{with rados_recov}
+%package rados
+Summary: The NFS-GANESHA's library for recovery backend
+Group: Applications/System
+BuildRequires: librados-devel >= 0.61
+Requires: nfs-ganesha = %{version}-%{release}
+
+%description rados
+This package contains the librados.so library. Ganesha uses it to
+store client tracking data in ceph cluster.
+%endif
+
 # Option packages start here. use "rpmbuild --with gpfs" (or equivalent)
 # for activating this part of the spec file
 
@@ -275,19 +290,6 @@ Requires: nfs-ganesha = %{version}-%{release}
 %description gpfs
 This package contains a FSAL shared object to
 be used with NFS-Ganesha to support GPFS backend
-%endif
-
-# ZFS
-%if %{with zfs}
-%package zfs
-Summary: The NFS-GANESHA's ZFS FSAL
-Group: Applications/System
-Requires:	nfs-ganesha = %{version}-%{release}
-BuildRequires:	libzfswrap-devel
-
-%description zfs
-This package contains a FSAL shared object to
-be used with NFS-Ganesha to support ZFS
 %endif
 
 # CEPH
@@ -400,8 +402,7 @@ Development headers and auxiliary files for developing with %{name}.
 cmake .	-DCMAKE_BUILD_TYPE=Debug			\
 	-DBUILD_CONFIG=rpmbuild				\
 	-DUSE_FSAL_NULL=%{use_fsal_null}		\
-	-DUSE_FSAL_MEM=%{use_fsal_mem}		\
-	-DUSE_FSAL_ZFS=%{use_fsal_zfs}			\
+	-DUSE_FSAL_MEM=%{use_fsal_mem}			\
 	-DUSE_FSAL_XFS=%{use_fsal_xfs}			\
 	-DUSE_FSAL_CEPH=%{use_fsal_ceph}		\
 	-DUSE_FSAL_RGW=%{use_fsal_rgw}			\
@@ -413,6 +414,8 @@ cmake .	-DCMAKE_BUILD_TYPE=Debug			\
 	-DUSE_LTTNG=%{use_lttng}			\
 	-DUSE_ADMIN_TOOLS=%{use_utils}			\
 	-DUSE_GUI_ADMIN_TOOLS=%{use_gui_utils}		\
+	-DUSE_RADOS_RECOV=%{use_rados_recov}		\
+	-DRADOS_URLS=%{use_rados_urls}			\
 	-DUSE_FSAL_VFS=ON				\
 	-DUSE_FSAL_PROXY=ON				\
 	-DUSE_DBUS=ON					\
@@ -446,7 +449,7 @@ install -m 644 config_samples/vfs.conf %{buildroot}%{_sysconfdir}/ganesha
 mkdir -p %{buildroot}%{_unitdir}
 
 install -m 644 scripts/systemd/nfs-ganesha.service.el7	%{buildroot}%{_unitdir}/nfs-ganesha.service
-install -m 644 scripts/systemd/nfs-ganesha-lock.service	%{buildroot}%{_unitdir}/nfs-ganesha-lock.service
+install -m 644 scripts/systemd/nfs-ganesha-lock.service.el7	%{buildroot}%{_unitdir}/nfs-ganesha-lock.service
 install -m 644 scripts/systemd/nfs-ganesha-config.service %{buildroot}%{_unitdir}/nfs-ganesha-config.service
 install -m 644 scripts/systemd/sysconfig/nfs-ganesha	%{buildroot}%{_sysconfdir}/sysconfig/ganesha
 %if 0%{?_tmpfilesdir:1}
@@ -466,10 +469,6 @@ install -m 644 config_samples/pt.conf %{buildroot}%{_sysconfdir}/ganesha
 
 %if %{with xfs}
 install -m 644 config_samples/xfs.conf %{buildroot}%{_sysconfdir}/ganesha
-%endif
-
-%if %{with zfs}
-install -m 644 config_samples/zfs.conf %{buildroot}%{_sysconfdir}/ganesha
 %endif
 
 %if %{with ceph}
@@ -504,6 +503,14 @@ make DESTDIR=%{buildroot} install
 %if ( 0%{?suse_version} )
 %service_add_post nfs-ganesha.service nfs-ganesha-lock.service nfs-ganesha-config.service
 %else
+%if ( 0%{?fedora} || ( 0%{?rhel} && 0%{?rhel} > 6 ) )
+semanage fcontext -a -t ganesha_var_log_t %{_localstatedir}/log/ganesha > /dev/null 2>&1 || :
+semanage fcontext -a -t ganesha_var_log_t %{_localstatedir}/log/ganesha/ganesha.log > /dev/null 2>&1 || :
+%if %{with gluster}
+semanage fcontext -a -t ganesha_var_log_t %{_localstatedir}/log/ganesha/ganesha-gfapi.log > /dev/null 2>&1 || :
+%endif
+restorecon %{_localstatedir}/log/ganesha
+%endif
 %if %{with_systemd}
 %systemd_post nfs-ganesha.service
 %systemd_post nfs-ganesha-lock.service
@@ -549,7 +556,7 @@ exit 0
 %dir %{_localstatedir}/run/ganesha
 %dir %{_libexecdir}/ganesha
 %{_libexecdir}/ganesha/nfs-ganesha-config.sh
-%dir %attr(0755,ganesha,ganesha) %{_localstatedir}/log/ganesha
+%dir %attr(0775,ganesha,root) %{_localstatedir}/log/ganesha
 
 %if %{with_systemd}
 %{_unitdir}/nfs-ganesha.service
@@ -624,16 +631,6 @@ exit 0
 %endif
 %endif
 
-%if %{with zfs}
-%files zfs
-%defattr(-,root,root,-)
-%{_libdir}/ganesha/libfsalzfs*
-%config(noreplace) %{_sysconfdir}/ganesha/zfs.conf
-%if %{with man_page}
-%{_mandir}/*/ganesha-zfs-config.8.gz
-%endif
-%endif
-
 %if %{with xfs}
 %files xfs
 %defattr(-,root,root,-)
@@ -679,7 +676,7 @@ exit 0
 %files -n libntirpc
 %defattr(-,root,root,-)
 %{_libdir}/libntirpc.so.@NTIRPC_VERSION_EMBED@
-%{_libdir}/libntirpc.so.1.5
+%{_libdir}/libntirpc.so.@NTIRPC_ABI_EMBED@
 %{_libdir}/libntirpc.so
 %{!?_licensedir:%global license %%doc}
 %license libntirpc/COPYING

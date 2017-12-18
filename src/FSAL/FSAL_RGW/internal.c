@@ -57,6 +57,7 @@ struct rgw_fsal_module RGWFSM;
 fsal_status_t rgw2fsal_error(const int rgw_errorcode)
 {
 	fsal_status_t status;
+
 	status.minor = -rgw_errorcode;
 
 	switch (-rgw_errorcode) {
@@ -199,9 +200,6 @@ int construct_handle(struct rgw_export *export,
 	*obj = NULL;
 
 	constructing = gsh_calloc(1, sizeof(struct rgw_handle));
-	if (constructing == NULL)
-		return -ENOMEM;
-
 	constructing->rgw_fh = rgw_fh;
 	constructing->up_ops = export->export.up_ops; /* XXXX going away */
 

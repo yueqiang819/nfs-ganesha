@@ -296,11 +296,6 @@ fsal_status_t GPFSFSAL_lock_op(struct fsal_export *export,
 			       fsal_lock_param_t *confl_lock,
 			       struct set_get_lock_arg *sg_lock_arg);
 
-fsal_status_t GPFSFSAL_share_op(int mntfd,
-				int fd,
-				void *p_owner,
-				fsal_share_param_t request_share);
-
 fsal_status_t GPFSFSAL_rename(struct fsal_obj_handle *old_hdl,
 			      const char *p_old_name,
 			      struct fsal_obj_handle *new_hdl,
@@ -331,4 +326,12 @@ size_t fs_da_addr_size(struct fsal_module *fsal_hdl);
 nfsstat4 getdeviceinfo(struct fsal_module *fsal_hdl,
 		       XDR *da_addr_body, const layouttype4 type,
 		       const struct pnfs_deviceid *deviceid);
+
+void fsal_gpfs_extract_stats(struct fsal_module *fsal_hdl, void *iter);
+
+void fsal_gpfs_reset_stats(struct fsal_module *fsal_hdl);
+
+void prepare_for_stats(struct fsal_module *fsal_hdl);
+
+int gpfs_op2index(int op);
 #endif

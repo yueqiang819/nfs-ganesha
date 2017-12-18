@@ -39,9 +39,12 @@
 #include <errno.h>
 #include "fsal.h"
 #include "log.h"
+#include "gsh_rpc.h"
 #include "nfs_init.h"
 #include "nfs_exports.h"
 #include "pnfs_utils.h"
+#include "config_parsing.h"
+#include "conf_url.h"
 
 /**
  * @brief LTTng trace enabling magic
@@ -73,11 +76,12 @@
 
 nfs_start_info_t my_nfs_start_info = {
 	.dump_default_config = false,
-	.lw_mark_trigger = false
+	.lw_mark_trigger = false,
+	.drop_caps = true
 };
 
 config_file_t config_struct;
-char *log_path = NULL;
+char *log_path;
 char *exec_name = "nfs-ganesha";
 char *host_name = "localhost";
 int debug_level = -1;
@@ -150,6 +154,7 @@ int main(int argc, char *argv[])
 	/* Set the server's boot time and epoch */
 	now(&ServerBootTime);
 	ServerEpoch = (time_t) ServerBootTime.tv_sec;
+	srand(ServerEpoch);
 
 	tempo_exec_name = strrchr(argv[0], '/');
 	if (tempo_exec_name != NULL)
@@ -399,6 +404,9 @@ int main(int argc, char *argv[])
 		LogFatal(COMPONENT_MAIN,
 			 "Could not start nfs daemon, pthread_sigmask failed");
 
+	/* init URL package */
+	config_url_init();
+
 	/* Create a memstream for parser+processing error messages */
 	if (!init_error_type(&err_type))
 		goto fatal_die;
@@ -420,6 +428,8 @@ int main(int argc, char *argv[])
 				 "Error %s while parsing (%s)",
 				 errstr != NULL ? errstr : "unknown",
 				 config_path);
+			if (errstr != NULL)
+				gsh_free(errstr);
 			goto fatal_die;
 		} else
 			LogWarn(COMPONENT_INIT,

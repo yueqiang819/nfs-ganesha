@@ -458,7 +458,6 @@ state_status_t layoutrecall(const struct fsal_up_vector *vec,
 			/* The export, owner, or state_t has gone stale,
 			 * skip this entry
 			 */
-			gsh_free(layout->lor_fh.nfs_fh4_val);
 			gsh_free(cb_data);
 			continue;
 		}
@@ -502,8 +501,10 @@ state_status_t layoutrecall(const struct fsal_up_vector *vec,
 
 static void free_layoutrec(nfs_cb_argop4 *op)
 {
-	gsh_free(op->nfs_cb_argop4_u.opcblayoutrecall.clora_recall.
-		 layoutrecall4_u.lor_layout.lor_fh.nfs_fh4_val);
+	layoutrecall4 *clora_recall =
+		&op->nfs_cb_argop4_u.opcblayoutrecall.clora_recall;
+
+	gsh_free(clora_recall->layoutrecall4_u.lor_layout.lor_fh.nfs_fh4_val);
 }
 
 /**
@@ -521,17 +522,11 @@ static void free_layoutrec(nfs_cb_argop4 *op)
  * period of delay has surpassed the lease period.
  *
  * @param[in] call  The RPC call being completed
- * @param[in] hook  The hook itself
- * @param[in] arg   Supplied argument (the callback data)
- * @param[in] flags There are no flags.
- *
- * @return 0, constantly.
  */
 
-static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
-				    void *arg, uint32_t flags)
+static void layoutrec_completion(rpc_call_t *call)
 {
-	struct layoutrecall_cb_data *cb_data = arg;
+	struct layoutrecall_cb_data *cb_data = call->call_arg;
 	bool deleted = false;
 	state_t *state = NULL;
 	struct root_op_context root_op_context;
@@ -548,7 +543,7 @@ static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
 		     call->cbt.v_u.v4.res.status, cb_data);
 
 	/* Get this out of the way up front */
-	if (hook != RPC_CALL_COMPLETE)
+	if (call->states & NFS_CB_CALL_ABORTED)
 		goto revoke;
 
 	if (call->cbt.v_u.v4.res.status == NFS4_OK) {
@@ -566,7 +561,7 @@ static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
 		 * the clientid in cb_data.
 		 */
 		free_layoutrec(&call->cbt.v_u.v4.args.argarray.argarray_val[1]);
-		nfs41_complete_single(call, hook, cb_data, flags);
+		nfs41_release_single(call);
 		gsh_free(cb_data);
 		goto out;
 	} else if (call->cbt.v_u.v4.res.status == NFS4ERR_DELAY) {
@@ -591,7 +586,7 @@ static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
 
 		/* We don't free the argument here, because we'll be
 		   re-using that to make the queued call. */
-		nfs41_complete_single(call, hook, cb_data, flags);
+		nfs41_release_single(call);
 		delayed_submit(layoutrecall_one_call, cb_data, delay);
 		goto out;
 	}
@@ -610,9 +605,8 @@ static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
 	if (ok) {
 		enum fsal_layoutreturn_circumstance circumstance;
 
-		if (hook == RPC_CALL_COMPLETE &&
-		    call->cbt.v_u.v4.res.status ==
-		    NFS4ERR_NOMATCHING_LAYOUT)
+		if (!(call->states & NFS_CB_CALL_ABORTED)
+		 && call->cbt.v_u.v4.res.status == NFS4ERR_NOMATCHING_LAYOUT)
 			circumstance = circumstance_client;
 		else
 			circumstance = circumstance_revoke;
@@ -652,7 +646,7 @@ static int32_t layoutrec_completion(rpc_call_t *call, rpc_call_hook hook,
 	}
 
 	free_layoutrec(&call->cbt.v_u.v4.args.argarray.argarray_val[1]);
-	nfs41_complete_single(call, hook, cb_data, flags);
+	nfs41_release_single(call);
 	gsh_free(cb_data);
 
 out:
@@ -668,8 +662,6 @@ out:
 		/* Release the owner */
 		dec_state_owner_ref(owner);
 	}
-
-	return 0;
 }
 
 /**
@@ -775,10 +767,10 @@ static void layoutrecall_one_call(void *arg)
 		root_op_context.req_ctx.ctx_export = export;
 		root_op_context.req_ctx.fsal_export = export->fsal_export;
 
-		code = nfs_rpc_v41_single(cb_data->client, &cb_data->arg,
+		code = nfs_rpc_cb_single(cb_data->client, &cb_data->arg,
 					  &state->state_refer,
 					  layoutrec_completion,
-					  cb_data, free_layoutrec);
+					  cb_data);
 
 		if (code != 0) {
 			/**
@@ -819,6 +811,7 @@ static void layoutrecall_one_call(void *arg)
 						      circumstance_revoke,
 						      state, cb_data->segment,
 						      0, NULL, &deleted);
+				free_layoutrec(&cb_data->arg);
 				gsh_free(cb_data);
 			}
 		} else {
@@ -865,20 +858,13 @@ struct cb_notify {
  * @brief Handle CB_NOTIFY_DEVICE response
  *
  * @param[in] call  The RPC call being completed
- * @param[in] hook  The hook itself
- * @param[in] arg   Supplied argument (the callback data)
- * @param[in] flags There are no flags.
- *
- * @return 0, constantly.
  */
 
-static int32_t notifydev_completion(rpc_call_t *call, rpc_call_hook hook,
-				    void *arg, uint32_t flags)
+static void notifydev_completion(rpc_call_t *call)
 {
 	LogFullDebug(COMPONENT_NFS_CB, "status %d arg %p",
-		     call->cbt.v_u.v4.res.status, arg);
-	gsh_free(arg);
-	return 0;
+		     call->cbt.v_u.v4.res.status, call->call_arg);
+	gsh_free(call->call_arg);
 }
 
 /**
@@ -936,9 +922,8 @@ static bool devnotify_client_callback(nfs_client_id_t *clientid,
 	memcpy(arg->notify_del.ndd_deviceid,
 	       &devicenotify->devid,
 	       sizeof(arg->notify_del.ndd_deviceid));
-	code =
-	    nfs_rpc_v41_single(clientid, &arg->arg, NULL, notifydev_completion,
-			       &arg->arg, NULL);
+	code = nfs_rpc_cb_single(clientid, &arg->arg, NULL,
+				 notifydev_completion, &arg->arg);
 	if (code != 0)
 		gsh_free(arg);
 
@@ -1104,28 +1089,27 @@ free_delegrecall_context(struct delegrecall_context *deleg_ctx)
  * @brief Handle the reply to a CB_RECALL
  *
  * @param[in] call  The RPC call being completed
- * @param[in] hook  The hook itself
- * @param[in] arg   Supplied argument (the callback data)
- * @param[in] flags There are no flags.
  *
  * @return 0, constantly.
  */
 
-static int32_t delegrecall_completion_func(rpc_call_t *call,
-					   rpc_call_hook hook, void *arg,
-					   uint32_t flags)
+static void delegrecall_completion_func(rpc_call_t *call)
 {
-	char *fh = NULL;
 	enum recall_resp_action resp_act;
 	nfsstat4 rc = NFS4_OK;
-	struct delegrecall_context *deleg_ctx = arg;
+	struct delegrecall_context *deleg_ctx = call->call_arg;
+	uint32_t minorversion = deleg_ctx->drc_clid->cid_minorversion;
 	struct state_t *state;
 	struct fsal_obj_handle *obj = NULL;
 	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
+	CB_RECALL4args *opcbrecall;
+	struct req_op_context *save_ctx = op_ctx, req_ctx = {0};
+	struct gsh_export *export = NULL;
+	bool ret = false;
 
 	LogDebug(COMPONENT_NFS_CB, "%p %s", call,
-		 (hook == RPC_CALL_COMPLETE) ? "Success" : "Failed");
+		 !(call->states & NFS_CB_CALL_ABORTED) ? "Success" : "Failed");
 
 	state = nfs4_State_Get_Pointer(deleg_ctx->drc_stateid.other);
 
@@ -1134,12 +1118,18 @@ static int32_t delegrecall_completion_func(rpc_call_t *call,
 		goto out_free_drc;
 	}
 
-	obj = get_state_obj_ref(state);
+	ret = get_state_obj_export_owner_refs(state, &obj,
+					     &export,
+					     NULL);
 
-	if (obj == NULL) {
+	if (!ret || obj == NULL) {
 		LogDebug(COMPONENT_NFS_CB, "Stale file");
 		goto out_free_drc;
 	}
+
+	op_ctx = &req_ctx;
+	op_ctx->ctx_export = export;
+	op_ctx->fsal_export = export->fsal_export;
 
 	if (isDebug(COMPONENT_NFS_CB)) {
 		char str[LOG_BUFF_LEN] = "\0";
@@ -1149,29 +1139,26 @@ static int32_t delegrecall_completion_func(rpc_call_t *call,
 		LogDebug(COMPONENT_NFS_CB, "deleg_entry %s", str);
 	}
 
-	switch (hook) {
-	case RPC_CALL_COMPLETE:
-		LogMidDebug(COMPONENT_NFS_CB, "call result: %d", call->stat);
-		fh = call->cbt.v_u.v4.args.argarray.argarray_val->
-				nfs_cb_argop4_u.opcbrecall.fh.nfs_fh4_val;
-		if (call->stat != RPC_SUCCESS) {
+	if (!(call->states & NFS_CB_CALL_ABORTED)) {
+		LogMidDebug(COMPONENT_NFS_CB, "call result: %d",
+			    call->call_req.cc_error.re_status);
+		if (call->call_req.cc_error.re_status != RPC_SUCCESS) {
 			LogEvent(COMPONENT_NFS_CB,
-				 "Call stat: %d, marking CB channel down",
-				 call->stat);
+				 "call result: %d, marking CB channel down",
+				 call->call_req.cc_error.re_status);
 			set_cb_chan_down(deleg_ctx->drc_clid, true);
 			resp_act = DELEG_RECALL_SCHED;
 		} else
 			resp_act = handle_recall_response(deleg_ctx,
 							  state,
 							  call);
-		break;
-	default:
+	} else {
 		LogEvent(COMPONENT_NFS_CB,
-			 "Unknown hook %d, marking CB channel down", hook);
+			 "Aborted: %d, marking CB channel down",
+			 call->call_req.cc_error.re_status);
 		set_cb_chan_down(deleg_ctx->drc_clid, true);
 		/* Mark the recall as failed */
 		resp_act = DELEG_RECALL_SCHED;
-		break;
 	}
 	switch (resp_act) {
 	case DELEG_RECALL_SCHED:
@@ -1216,16 +1203,21 @@ out_free_drc:
 	free_delegrecall_context(deleg_ctx);
 
 out_free:
-
-	fh = call->cbt.v_u.v4.args.argarray.argarray_val->
-				nfs_cb_argop4_u.opcbrecall.fh.nfs_fh4_val;
-	gsh_free(fh);
-	free_rpc_call(call);
+	if (minorversion == 0) {
+		opcbrecall = &call->cbt.v_u.v4.args.argarray.argarray_val[0]
+				.nfs_cb_argop4_u.opcbrecall;
+		nfs4_freeFH(&opcbrecall->fh);
+	} else {
+		opcbrecall = &call->cbt.v_u.v4.args.argarray.argarray_val[1]
+				.nfs_cb_argop4_u.opcbrecall;
+		nfs4_freeFH(&opcbrecall->fh);
+		nfs41_release_single(call);
+	}
 
 	if (state != NULL)
 		dec_state_t_ref(state);
 
-	return 0; /*Always return zero, the delegation is recalled or revoked */
+	op_ctx = save_ctx;
 }
 
 /**
@@ -1243,9 +1235,8 @@ void delegrecall_one(struct fsal_obj_handle *obj,
 		     struct state_t *state,
 		     struct delegrecall_context *p_cargs)
 {
-	rpc_call_channel_t *chan;
-	rpc_call_t *call = NULL;
-	nfs_cb_argop4 argop[1];
+	int ret;
+	nfs_cb_argop4 argop;
 	struct cf_deleg_stats *clfl_stats;
 	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
@@ -1267,66 +1258,26 @@ void delegrecall_one(struct fsal_obj_handle *obj,
 
 	inc_recalls(p_cargs->drc_clid->gsh_client);
 
-	/* Attempt a recall only if channel state is UP */
-	if (get_cb_chan_down(p_cargs->drc_clid)) {
-		LogCrit(COMPONENT_NFS_CB,
-			"Call back channel down, not issuing a recall");
-		goto out;
-	}
-
-	chan = nfs_rpc_get_chan(p_cargs->drc_clid, NFS_RPC_FLAG_NONE);
-	if (!chan) {
-		LogCrit(COMPONENT_NFS_CB, "nfs_rpc_get_chan failed");
-		/* TODO: move this to nfs_rpc_get_chan ? */
-		set_cb_chan_down(p_cargs->drc_clid, true);
-		goto out;
-	}
-	if (!chan->clnt) {
-		LogCrit(COMPONENT_NFS_CB, "nfs_rpc_get_chan failed (no clnt)");
-		set_cb_chan_down(p_cargs->drc_clid, true);
-		goto out;
-	}
-	/* allocate a new call--freed in completion hook */
-	call = alloc_rpc_call();
-
-	call->chan = chan;
-
-	/* setup a compound */
-	cb_compound_init_v4(&call->cbt, 1, 0,
-			    p_cargs->drc_clid->cid_cb.v40.cb_callback_ident,
-			    "brrring!!!", 10);
-
-	argop->argop = NFS4_OP_CB_RECALL;
-	COPY_STATEID(&argop->nfs_cb_argop4_u.opcbrecall.stateid, state);
-	argop->nfs_cb_argop4_u.opcbrecall.truncate = false;
+	argop.argop = NFS4_OP_CB_RECALL;
+	COPY_STATEID(&argop.nfs_cb_argop4_u.opcbrecall.stateid, state);
+	argop.nfs_cb_argop4_u.opcbrecall.truncate = false;
 
 	/* Convert it to a file handle */
-	if (!nfs4_FSALToFhandle(true, &argop->nfs_cb_argop4_u.opcbrecall.fh,
+	if (!nfs4_FSALToFhandle(true, &argop.nfs_cb_argop4_u.opcbrecall.fh,
 				obj, p_cargs->drc_exp)) {
 		LogCrit(COMPONENT_FSAL_UP,
 			"nfs4_FSALToFhandle failed, can not process recall");
 		goto out;
 	}
 
-	/* add ops, till finished */
-	cb_compound_add_op(&call->cbt, argop);
-
-	/* set completion hook */
-	call->call_hook = delegrecall_completion_func;
-
-	/* call it (here, in current thread context)
-	   ret is always 0 for async calls, might change in future */
-	if (nfs_rpc_submit_call(call, p_cargs, NFS_RPC_CALL_NONE) == 0)
+	ret = nfs_rpc_cb_single(p_cargs->drc_clid, &argop, &state->state_refer,
+				delegrecall_completion_func, p_cargs);
+	if (ret == 0)
 		return;
-
 out:
-
+	LogDebug(COMPONENT_FSAL_UP, "nfs_rpc_cb_single returned %d", ret);
 	inc_failed_recalls(p_cargs->drc_clid->gsh_client);
-
-	nfs4_freeFH(&argop->nfs_cb_argop4_u.opcbrecall.fh);
-
-	if (call)
-		free_rpc_call(call);
+	nfs4_freeFH(&argop.nfs_cb_argop4_u.opcbrecall.fh);
 
 	if (!eval_deleg_revoke(state) &&
 	    !schedule_delegrecall_task(p_cargs, 1)) {
@@ -1340,8 +1291,7 @@ out:
 	if (!str_valid)
 		display_stateid(&dspbuf, state);
 
-	LogCrit(COMPONENT_STATE, "Delegation will be revoked for %s",
-		str);
+	LogCrit(COMPONENT_STATE, "Delegation will be revoked for %s", str);
 
 	p_cargs->drc_clid->num_revokes++;
 	inc_revokes(p_cargs->drc_clid->gsh_client);
@@ -1373,6 +1323,9 @@ static void delegrevoke_check(void *ctx)
 	char str[LOG_BUFF_LEN] = "\0";
 	struct display_buffer dspbuf = {sizeof(str), str, str};
 	bool str_valid = false;
+	struct req_op_context *save_ctx = op_ctx, req_ctx = {0};
+	struct gsh_export *export = NULL;
+	bool   ret = false;
 
 	state = nfs4_State_Get_Pointer(deleg_ctx->drc_stateid.other);
 
@@ -1386,12 +1339,19 @@ static void delegrevoke_check(void *ctx)
 		str_valid = true;
 	}
 
-	obj = get_state_obj_ref(state);
+	ret = get_state_obj_export_owner_refs(state, &obj,
+					     &export,
+					     NULL);
 
-	if (obj == NULL) {
+	if (!ret || obj == NULL) {
 		LogDebug(COMPONENT_NFS_CB, "Stale file");
 		goto out;
 	}
+
+	/* op_ctx may be used by state_del_locked and others */
+	op_ctx = &req_ctx;
+	op_ctx->ctx_export = export;
+	op_ctx->fsal_export = export->fsal_export;
 
 	if (eval_deleg_revoke(state)) {
 		if (str_valid)
@@ -1430,6 +1390,8 @@ static void delegrevoke_check(void *ctx)
 
 	if (state != NULL)
 		dec_state_t_ref(state);
+
+	op_ctx = save_ctx;
 }
 
 static void delegrecall_task(void *ctx)
@@ -1437,6 +1399,9 @@ static void delegrecall_task(void *ctx)
 	struct delegrecall_context *deleg_ctx = ctx;
 	struct state_t *state;
 	struct fsal_obj_handle *obj;
+	bool   ret = false;
+	struct req_op_context *save_ctx, req_ctx = {0};
+	struct gsh_export *export = NULL;
 
 	state = nfs4_State_Get_Pointer(deleg_ctx->drc_stateid.other);
 
@@ -1444,15 +1409,25 @@ static void delegrecall_task(void *ctx)
 		LogDebug(COMPONENT_NFS_CB, "Delgation is already returned");
 		free_delegrecall_context(deleg_ctx);
 	} else {
-		obj = get_state_obj_ref(state);
+		ret = get_state_obj_export_owner_refs(state, &obj,
+						     &export,
+						     NULL);
 
-		if (obj != NULL) {
-			delegrecall_one(obj, state, deleg_ctx);
-
-		} else {
+		if (!ret || obj == NULL) {
 			LogDebug(COMPONENT_NFS_CB,
 				 "Delgation recall skipped due to stale file");
+			goto out;
 		}
+
+		/* op_ctx may be used by state_del_locked and others */
+		save_ctx = op_ctx;
+		op_ctx = &req_ctx;
+		op_ctx->ctx_export = export;
+		op_ctx->fsal_export = export->fsal_export;
+		delegrecall_one(obj, state, deleg_ctx);
+		op_ctx = save_ctx;
+
+out:
 		dec_state_t_ref(state);
 	}
 }
@@ -1495,6 +1470,7 @@ state_status_t delegrecall_impl(struct fsal_obj_handle *obj)
 	struct state_t *state;
 	state_owner_t *owner;
 	struct delegrecall_context *drc_ctx;
+	struct req_op_context *save_ctx = op_ctx, req_ctx = {0};
 
 	LogDebug(COMPONENT_FSAL_UP,
 		 "FSAL_UP_DELEG: obj %p type %u",
@@ -1540,6 +1516,11 @@ state_status_t delegrecall_impl(struct fsal_obj_handle *obj)
 			continue;
 		}
 
+		/* op_ctx may be used by state_del_locked and others */
+		op_ctx = &req_ctx;
+		op_ctx->ctx_export = drc_ctx->drc_exp;
+		op_ctx->fsal_export = drc_ctx->drc_exp->fsal_export;
+
 		drc_ctx->drc_clid = owner->so_owner.so_nfs4_owner.so_clientrec;
 		COPY_STATEID(&drc_ctx->drc_stateid, state);
 		inc_client_id_ref(drc_ctx->drc_clid);
@@ -1566,6 +1547,8 @@ state_status_t delegrecall_impl(struct fsal_obj_handle *obj)
 		delegrecall_one(obj, state, drc_ctx);
 	}
 	PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
+
+	op_ctx = save_ctx;
 	return rc;
 }
 
@@ -1607,6 +1590,7 @@ state_status_t delegrecall(const struct fsal_up_vector *vec,
 void up_ready_init(struct fsal_up_vector *up_ops)
 {
 	up_ops->up_ready = false;
+	up_ops->up_cancel = false;
 	PTHREAD_MUTEX_init(&up_ops->up_mutex, NULL);
 	PTHREAD_COND_init(&up_ops->up_cond, NULL);
 }
@@ -1620,11 +1604,20 @@ void up_ready_set(struct fsal_up_vector *up_ops)
 	PTHREAD_MUTEX_unlock(&up_ops->up_mutex);
 }
 
+/* This is to cancel waiting and resume Upcall threads */
+void up_ready_cancel(struct fsal_up_vector *up_ops)
+{
+	PTHREAD_MUTEX_lock(&up_ops->up_mutex);
+	up_ops->up_cancel = true;
+	pthread_cond_broadcast(&up_ops->up_cond);
+	PTHREAD_MUTEX_unlock(&up_ops->up_mutex);
+}
+
 /* Upcall threads should call this to wait for upcall readiness */
 void up_ready_wait(struct fsal_up_vector *up_ops)
 {
 	PTHREAD_MUTEX_lock(&up_ops->up_mutex);
-	while (!up_ops->up_ready)
+	while (!up_ops->up_ready && !up_ops->up_cancel)
 		pthread_cond_wait(&up_ops->up_cond, &up_ops->up_mutex);
 	PTHREAD_MUTEX_unlock(&up_ops->up_mutex);
 }

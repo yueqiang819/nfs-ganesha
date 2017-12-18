@@ -49,6 +49,8 @@ struct mem_fsal_export {
 	struct mem_fsal_obj_handle *root_handle;
 	/** Entry into list of exports */
 	struct glist_head export_entry;
+	/** Lock protecting mfe_objs */
+	pthread_rwlock_t mfe_exp_lock;
 	/** List of all the objects in this export */
 	struct glist_head mfe_objs;
 };
@@ -95,7 +97,8 @@ struct mem_fsal_obj_handle {
 		} mh_symlink;
 	};
 	struct glist_head dirents; /* List of dirents pointing to obj */
-	struct glist_head mfo_exp_entry;
+	struct glist_head mfo_exp_entry; /**< Link into mfs_objs */
+	struct mem_fsal_export *mfo_exp; /**< Export owning object */
 	char *m_name;	/**< Base name of obj, for debugging */
 	uint32_t datasize;
 	bool is_export;
@@ -140,6 +143,7 @@ fsal_status_t mem_create_export(struct fsal_module *fsal_hdl,
 /**
  * @brief Free a MEM handle
  *
+ * @note mfe_exp_lock MUST be held for write
  * @param[in] hdl	Handle to free
  */
 static inline void _mem_free_handle(struct mem_fsal_obj_handle *hdl,
@@ -150,6 +154,7 @@ static inline void _mem_free_handle(struct mem_fsal_obj_handle *hdl,
 #endif
 
 	glist_del(&hdl->mfo_exp_entry);
+	hdl->mfo_exp = NULL;
 
 	if (hdl->m_name != NULL) {
 		gsh_free(hdl->m_name);
@@ -159,7 +164,8 @@ static inline void _mem_free_handle(struct mem_fsal_obj_handle *hdl,
 	gsh_free(hdl);
 }
 
-void mem_clean_dir_tree(struct mem_fsal_obj_handle *parent);
+void mem_clean_export(struct mem_fsal_obj_handle *root);
+void mem_clean_all_dirents(struct mem_fsal_obj_handle *parent);
 
 /**
  * @brief FSAL Module wrapper for MEM

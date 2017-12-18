@@ -134,8 +134,9 @@ state_status_t _state_add_impl(struct fsal_obj_handle *obj,
 	mutex_init = true;
 
 	/* Add the stateid.other, this will increment cid_stateid_counter */
-	nfs4_BuildStateId_Other(owner_input->so_owner.so_nfs4_owner.
-				so_clientrec, pnew_state->stateid_other);
+	nfs4_BuildStateId_Other(
+			owner_input->so_owner.so_nfs4_owner.so_clientrec,
+			pnew_state->stateid_other);
 
 	/* Set the type and data for this state */
 	memcpy(&(pnew_state->state_data), state_data, sizeof(*state_data));
@@ -168,7 +169,11 @@ state_status_t _state_add_impl(struct fsal_obj_handle *obj,
 	pnew_state->state_obj = obj;
 
 	/* Add the state to the related hashtable */
-	if (!nfs4_State_Set(pnew_state)) {
+	status = nfs4_State_Set(pnew_state);
+	switch (status) {
+	case STATE_SUCCESS:
+		break;
+	default:
 		if (!str_valid)
 			display_stateid_other(&dspbuf,
 					      pnew_state->stateid_other);
@@ -177,10 +182,6 @@ state_status_t _state_add_impl(struct fsal_obj_handle *obj,
 			"Can't create a new state id %s for the obj %p (F)",
 			str, obj);
 
-		/* Return STATE_MALLOC_ERROR since most likely the
-		 * nfs4_State_Set failed to allocate memory.
-		 */
-		status = STATE_MALLOC_ERROR;
 		goto errout;
 	}
 
@@ -389,14 +390,12 @@ void _state_del_locked(state_t *state, const char *func, int line)
 	state->state_obj = NULL;
 	PTHREAD_MUTEX_unlock(&state->state_mutex);
 
-	if (obj->fsal->m_ops.support_ex(obj)) {
-		/* We need to close the state at this point. The state will
-		 * eventually be freed and it must be closed before free. This
-		 * is the last point we have a valid reference to the object
-		 * handle.
-		 */
-		(void) obj->obj_ops.close2(obj, state);
-	}
+	/* We need to close the state at this point. The state will
+	 * eventually be freed and it must be closed before free. This
+	 * is the last point we have a valid reference to the object
+	 * handle.
+	 */
+	(void) obj->obj_ops.close2(obj, state);
 
 	if (owner != NULL) {
 		bool owner_retain = false;
@@ -707,7 +706,6 @@ enum nfsstat4 release_lock_owner(state_owner_t *owner)
  */
 void release_openstate(state_owner_t *owner)
 {
-	state_status_t state_status;
 	int errcnt = 0;
 	bool ok;
 	struct state_nfs4_owner_t *nfs4_owner = &owner->so_owner.so_nfs4_owner;
@@ -807,18 +805,6 @@ void release_openstate(state_owner_t *owner)
 		op_ctx->ctx_export = export;
 		op_ctx->fsal_export = export->fsal_export;
 
-		if (state->state_type == STATE_TYPE_SHARE &&
-		    !obj->fsal->m_ops.support_ex(obj)) {
-			state_status = state_share_remove(obj, owner, state);
-
-			if (!state_unlock_err_ok(state_status)) {
-				errcnt++;
-				LogEvent(COMPONENT_CLIENTID,
-					 "EXPIRY failed to release share stateid error %s",
-					 state_err_str(state_status));
-			}
-		}
-
 		/* If FSAL supports extended operations, file will be closed by
 		 * state_del_locked.
 		 */
@@ -826,11 +812,6 @@ void release_openstate(state_owner_t *owner)
 		state_del_locked(state);
 
 		dec_state_t_ref(state);
-
-		if (!obj->fsal->m_ops.support_ex(obj)) {
-			/* Close the file in FSAL */
-			fsal_close(obj);
-		}
 
 		PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
@@ -861,6 +842,9 @@ void revoke_owner_delegs(state_owner_t *client_owner)
 	state_t *state, *first;
 	struct fsal_obj_handle *obj;
 	bool so_mutex_held;
+	struct gsh_export *export = NULL;
+	struct req_op_context *save_ctx, req_ctx = {0};
+	bool ok;
 
  again:
 	first = NULL;
@@ -898,9 +882,10 @@ void revoke_owner_delegs(state_owner_t *client_owner)
 		 * even after state_deleg_revoke releases the reference it
 		 * holds.
 		 */
-		obj = get_state_obj_ref(state);
+		ok = get_state_obj_export_owner_refs(state, &obj, &export,
+						     NULL);
 
-		if (obj == NULL) {
+		if (!ok || obj == NULL) {
 			LogDebug(COMPONENT_STATE,
 				 "Stale state or file");
 			continue;
@@ -913,13 +898,16 @@ void revoke_owner_delegs(state_owner_t *client_owner)
 		 * state_del_locked which is called from deleg_revoke.
 		 */
 		PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
-		state_deleg_revoke(obj, state);
-		PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
-		if (!obj->fsal->m_ops.support_ex(obj)) {
-			/* Close the file in FSAL */
-			fsal_close(obj);
-		}
+		/* op_ctx may be used by state_del_locked and others */
+		save_ctx = op_ctx;
+		op_ctx = &req_ctx;
+		op_ctx->ctx_export = export;
+		op_ctx->fsal_export = export->fsal_export;
+
+		state_deleg_revoke(obj, state);
+		op_ctx = save_ctx;
+		PTHREAD_RWLOCK_unlock(&obj->state_hdl->state_lock);
 
 		/* Since we dropped so_mutex, we must restart the loop. */
 		goto again;
@@ -938,7 +926,6 @@ void state_export_release_nfs4_state(void)
 {
 	state_t *state;
 	state_t *first;
-	state_status_t state_status;
 	int errcnt = 0;
 	struct glist_head *glist, *glistn;
 	bool hold_export_lock;
@@ -1077,26 +1064,6 @@ void state_export_release_nfs4_state(void)
 		hold_export_lock = false;
 
 		PTHREAD_RWLOCK_wrlock(&obj->state_hdl->state_lock);
-
-		if (state->state_type == STATE_TYPE_SHARE &&
-		    !obj->fsal->m_ops.support_ex(obj)) {
-			state_status = state_share_remove(obj, owner, state);
-
-			if (!state_unlock_err_ok(state_status)) {
-
-				LogEvent(COMPONENT_CLIENTID,
-					 "EXPIRY failed to release share stateid error %s",
-					 state_err_str(state_status));
-				errcnt++;
-
-				/* Release the references taken above */
-				dec_state_owner_ref(owner);
-				dec_state_t_ref(state);
-				PTHREAD_RWLOCK_unlock(
-						&obj->state_hdl->state_lock);
-				continue;
-			}
-		}
 
 		if (state->state_type == STATE_TYPE_DELEG) {
 			/* this deletes the state too */

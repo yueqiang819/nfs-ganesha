@@ -41,6 +41,15 @@
 
 static const char *module_name = "RGW";
 
+#if ((LIBRGW_FILE_VER_MAJOR > 1) || \
+	((LIBRGW_FILE_VER_MAJOR == 1) && \
+	 ((LIBRGW_FILE_VER_MINOR > 1) || \
+	  ((LIBRGW_FILE_VER_MINOR == 1) && (LIBRGW_FILE_VER_EXTRA >= 4)))))
+#define HAVE_DIRENT_OFFSETOF 1
+#else
+#define HAVE_DIRENT_OFFSETOF 0
+#endif
+
 /* filesystem info for RGW */
 static struct fsal_staticfsinfo_t default_rgw_info = {
 	.maxfilesize = UINT64_MAX,
@@ -54,7 +63,6 @@ static struct fsal_staticfsinfo_t default_rgw_info = {
 	.link_support = false,
 	.symlink_support = false,
 	.lock_support = false,
-	.lock_support_owner = false,
 	.lock_support_async_block = false,
 	.named_attr = true, /* XXX */
 	.unique_handles = true,
@@ -67,6 +75,10 @@ static struct fsal_staticfsinfo_t default_rgw_info = {
 	.maxwrite = FSAL_MAXIOSIZE,
 	.umask = 0,
 	.rename_changes_key = true,
+#if HAVE_DIRENT_OFFSETOF
+	.compute_readdir_cookie = true,
+#endif
+	.whence_is_name = true,
 };
 
 static struct config_item rgw_items[] = {
@@ -123,17 +135,6 @@ static fsal_status_t init_config(struct fsal_module *module_in,
 		return fsalstat(ERR_FSAL_INVAL, 0);
 
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
- /**
- * @brief Indicate support for extended operations.
- *
- * @retval true if extended operations are supported.
- */
-
-bool support_ex(struct fsal_obj_handle *obj)
-{
-	return true;
 }
 
 /**
@@ -248,12 +249,9 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 					rc);
 			}
 
-			if (conf_path)
-				gsh_free(conf_path);
-			if (inst_name)
-				gsh_free(inst_name);
-			if (cluster)
-				gsh_free(cluster);
+			gsh_free(conf_path);
+			gsh_free(inst_name);
+			gsh_free(cluster);
 		}
 		PTHREAD_MUTEX_unlock(&init_mtx);
 	}
@@ -264,14 +262,6 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	}
 
 	export = gsh_calloc(1, sizeof(struct rgw_export));
-	if (export == NULL) {
-		status.major = ERR_FSAL_NOMEM;
-		LogCrit(COMPONENT_FSAL,
-			"Unable to allocate export object for %s.",
-			op_ctx->ctx_export->fullpath);
-		goto error;
-	}
-
 	fsal_export_init(&export->export);
 	export_ops_init(&export->export.exp_ops);
 
@@ -362,9 +352,7 @@ static fsal_status_t create_export(struct fsal_module *module_in,
 	return status;
 
  error:
-	if (export) {
-		gsh_free(export);
-	}
+	gsh_free(export);
 
 	if (initialized)
 		initialized = false;
@@ -402,7 +390,6 @@ MODULE_INIT void init(void)
 	/* Set up module operations */
 	myself->m_ops.create_export = create_export;
 	myself->m_ops.init_config = init_config;
-	myself->m_ops.support_ex = support_ex;
 }
 
 /**

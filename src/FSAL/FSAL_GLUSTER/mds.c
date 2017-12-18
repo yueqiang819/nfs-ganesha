@@ -219,8 +219,9 @@ static nfsstat4 pnfs_layout_get(struct fsal_obj_handle          *obj_pub,
 	rc = glfs_h_extract_handle(handle->glhandle, ds_wire.gfid,
 				   GFAPI_HANDLE_LENGTH);
 	if (rc < 0) {
+		rc = errno;
 		LogMajor(COMPONENT_PNFS, "Invalid glfs_object");
-		return posix2nfs4_error(-rc);
+		return posix2nfs4_error(rc);
 	}
 
 	ds_wire.layout   = file_layout;
@@ -396,9 +397,9 @@ nfsstat4 getdeviceinfo(struct fsal_module *fsal_hdl,
 	 * And whole file is provided to the DS, so the starting
 	 * index for that file is zero
 	 */
-	unsigned num_ds                  = 1;
-	uint32_t stripes                 = 1;
-	uint32_t stripe_ind              = 0;
+	unsigned int num_ds = 1;
+	uint32_t stripes = 1;
+	uint32_t stripe_ind = 0;
 
 
 	if (type != LAYOUT4_NFSV4_1_FILES) {

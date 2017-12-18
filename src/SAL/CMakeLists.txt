@@ -14,6 +14,8 @@ SET(sal_STAT_SRCS
    nfs4_recovery.c
    nfs41_session_id.c
    nfs4_owner.c
+   recovery/recovery_fs.c
+   recovery/recovery_fs_ng.c
 )
 
 if(USE_NLM)
@@ -31,8 +33,20 @@ if(USE_9P)
     )
 endif(USE_9P)
 
+if(USE_RADOS_RECOV)
+  set(sal_STAT_SRCS
+    ${sal_STAT_SRCS}
+    recovery/recovery_rados_kv.c
+    recovery/recovery_rados_ng.c
+    )
+endif(USE_RADOS_RECOV)
+
 add_library(sal STATIC ${sal_STAT_SRCS})
 add_sanitizers(sal)
 
+if(USE_RADOS_RECOV)
+  include_directories(${RADOS_INCLUDE_DIR})
+  target_link_libraries(sal ${RADOS_LIBRARIES})
+endif(USE_RADOS_RECOV)
 
 ########### install files ###############

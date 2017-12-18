@@ -137,6 +137,8 @@ struct glusterfs_fs {
 	int64_t    refcnt;
 	pthread_t  up_thread; /* upcall thread */
 	int8_t destroy_mode;
+	uint64_t up_poll_usec;
+	bool   enable_upcall;
 };
 
 struct glusterfs_export {
@@ -218,11 +220,13 @@ void setglustercreds(struct glusterfs_export *glfs_export, uid_t *uid,
 		     gid_t *gid, unsigned int ngrps, gid_t *groups,
 		     char *file, int line, char *function);
 
-#define SET_GLUSTER_CREDS(glfs_export, uid, gid, glen, garray)		    \
-		((void) setglustercreds(glfs_export, uid, gid, glen,	    \
-				       garray, (char *) __FILE__,	    \
-				       __LINE__, (char *) __func__))	    \
-									    \
+#define SET_GLUSTER_CREDS(glfs_export, uid, gid, glen, garray) do {	\
+	int old_errno = errno;						\
+	((void) setglustercreds(glfs_export, uid, gid, glen,		\
+				garray, (char *) __FILE__,		\
+				__LINE__, (char *) __func__));		\
+	errno = old_errno;						\
+} while (0)
 
 #ifdef GLTIMING
 struct latency_data glfsal_latencies[LATENCY_SLOTS];
@@ -246,6 +250,12 @@ void construct_handle(struct glusterfs_export *glexport, const struct stat *st,
 		      struct glfs_object *glhandle, unsigned char *globjhdl,
 		      int len, struct glusterfs_handle **obj,
 		      const char *vol_uuid);
+
+fsal_status_t glfs2fsal_handle(struct glusterfs_export *glfs_export,
+			       struct glfs_object *glhandle,
+			       struct fsal_obj_handle **pub_handle,
+			       struct stat *sb,
+			       struct attrlist *attrs_out);
 
 fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 				      void *parse_node,
@@ -299,5 +309,7 @@ void *GLUSTERFSAL_UP_Thread(void *Arg);
 int initiate_up_thread(struct glusterfs_fs *gl_fs);
 int upcall_inode_invalidate(struct glusterfs_fs *gl_fs,
 			    struct glfs_object *object);
+void gluster_process_upcall(struct glfs_upcall *cbk, void *data);
+
 fsal_status_t glusterfs_close_my_fd(struct glusterfs_fd *my_fd);
 #endif				/* GLUSTER_INTERNAL */

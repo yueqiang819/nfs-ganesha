@@ -69,17 +69,22 @@ Protocols = 3, 4, 9p;
 
 Including other config files
 --------------------------------------------------------------------------------
-Additional files can be referenced in a configuration using include statement.::
+Additional files can be referenced in a configuration using %include
+and %url directives.::
 
 	%include <filename>
+	%url <url, e.g., rados://mypool/myobject>
 
-The included file is inserted into the configuration text in place of this line.
-The configuration following this line is resumed after the end of the included files.
-File inclusion can be to any depth.
+The included file is inserted into the configuration text in place of
+the %include or %url line. The configuration following the inclusion
+is resumed after the end of the included files. File inclusion can be
+to any depth.
 
 eg.::
     %include base.conf
     %include "base.conf"
+    %url rados://mypool/myobject
+    %url "rados://mypool/myobject
 
 
 BLOCKS
@@ -156,10 +161,6 @@ XFS {}
 --------------------------------------------------------------------------------
 Refer to :doc:`ganesha-xfs-config <ganesha-xfs-config>`\(8) for usage
 
-ZFS {}
---------------------------------------------------------------------------------
-Refer to :doc:`ganesha-zfs-config <ganesha-zfs-config>`\(8) for usage
-
 
 EXAMPLE
 ==========================================================
@@ -174,7 +175,6 @@ See also
 :doc:`ganesha-rgw-config <ganesha-rgw-config>`\(8)
 :doc:`ganesha-vfs-config <ganesha-vfs-config>`\(8)
 :doc:`ganesha-xfs-config <ganesha-xfs-config>`\(8)
-:doc:`ganesha-zfs-config <ganesha-zfs-config>`\(8)
 :doc:`ganesha-gpfs-config <ganesha-gpfs-config>`\(8)
 :doc:`ganesha-9p-config <ganesha-9p-config>`\(8)
 :doc:`ganesha-proxy-config <ganesha-proxy-config>`\(8)

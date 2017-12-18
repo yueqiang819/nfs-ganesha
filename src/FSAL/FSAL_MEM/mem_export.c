@@ -45,6 +45,7 @@
 #include "FSAL/fsal_config.h"
 #include "mem_int.h"
 #include "nfs_exports.h"
+#include "nfs_core.h"
 #include "export_mgr.h"
 
 #ifdef __FreeBSD__
@@ -72,7 +73,7 @@ static void mem_release_export(struct fsal_export *exp_hdl)
 	myself = container_of(exp_hdl, struct mem_fsal_export, export);
 
 	if (myself->root_handle != NULL) {
-		mem_clean_dir_tree(myself->root_handle);
+		mem_clean_export(myself->root_handle);
 
 		fsal_obj_handle_fini(&myself->root_handle->obj_handle);
 
@@ -80,7 +81,9 @@ static void mem_release_export(struct fsal_export *exp_hdl)
 			 "Releasing hdl=%p, name=%s",
 			 myself->root_handle, myself->root_handle->m_name);
 
+		PTHREAD_RWLOCK_wrlock(&myself->mfe_exp_lock);
 		mem_free_handle(myself->root_handle);
+		PTHREAD_RWLOCK_unlock(&myself->mfe_exp_lock);
 
 		myself->root_handle = NULL;
 	}
@@ -90,9 +93,7 @@ static void mem_release_export(struct fsal_export *exp_hdl)
 
 	glist_del(&myself->export_entry);
 
-	if (myself->export_path != NULL)
-		gsh_free(myself->export_path);
-
+	gsh_free(myself->export_path);
 	gsh_free(myself);
 }
 
@@ -317,16 +318,17 @@ fsal_status_t mem_create_export(struct fsal_module *fsal_hdl,
 {
 	struct mem_fsal_export *myself;
 	int retval = 0;
+	pthread_rwlockattr_t attrs;
 
 	myself = gsh_calloc(1, sizeof(struct mem_fsal_export));
 
-	if (myself == NULL) {
-		LogMajor(COMPONENT_FSAL,
-			 "Could not allocate export");
-		return fsalstat(posix2fsal_error(errno), errno);
-	}
-
 	glist_init(&myself->mfe_objs);
+	pthread_rwlockattr_init(&attrs);
+#ifdef GLIBC
+	pthread_rwlockattr_setkind_np(&attrs,
+		PTHREAD_RWLOCK_PREFER_WRITER_NONRECURSIVE_NP);
+#endif
+	PTHREAD_RWLOCK_init(&myself->mfe_exp_lock, &attrs);
 	fsal_export_init(&myself->export);
 	mem_export_ops_init(&myself->export.exp_ops);
 
@@ -336,8 +338,6 @@ fsal_status_t mem_create_export(struct fsal_module *fsal_hdl,
 		/* seriously bad */
 		LogMajor(COMPONENT_FSAL,
 			 "Could not attach export");
-		gsh_free(myself->export_path);
-		gsh_free(myself->root_handle);
 		free_export_ops(&myself->export);
 		gsh_free(myself);	/* elvis has left the building */
 

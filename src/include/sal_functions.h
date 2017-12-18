@@ -64,6 +64,7 @@ const char *state_owner_type_to_str(state_owner_type_t type);
 bool different_owners(state_owner_t *owner1, state_owner_t *owner2);
 int display_owner(struct display_buffer *dspbuf, state_owner_t *owner);
 void inc_state_owner_ref(state_owner_t *owner);
+bool hold_state_owner(state_owner_t *owner);
 void dec_state_owner_ref(state_owner_t *owner);
 void free_state_owner(state_owner_t *owner);
 
@@ -396,9 +397,6 @@ void nfs4_BuildStateId_Other(nfs_client_id_t *clientid, char *other);
 #define STATEID_SPECIAL_ALL_0 2	/*< Allow anonymous */
 #define STATEID_SPECIAL_ALL_1 4	/*< Allow read-bypass */
 #define STATEID_SPECIAL_CURRENT 8	/*< Allow current */
-#define STATEID_SPECIAL_FREE 0x100	/*< Check for FREE_STATEID */
-#define STATEID_SPECIAL_FOR_FREE (STATEID_SPECIAL_CURRENT | \
-				  STATEID_SPECIAL_FREE)
 
 /* The following flag tells nfs4_Check_Stateid this is a close call
  * and to ignore stateid that have valid clientid portion, but the
@@ -450,7 +448,7 @@ static inline void dec_state_t_ref(struct state_t *state)
 		dec_nfs4_state_ref(state);
 }
 
-int nfs4_State_Set(state_t *state_data);
+state_status_t nfs4_State_Set(state_t *state_data);
 struct state_t *nfs4_State_Get_Pointer(char *other);
 bool nfs4_State_Del(state_t *state);
 void nfs_State_PrintAll(void);
@@ -533,7 +531,7 @@ state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t *name,
 				 state_owner_type_t type,
 				 state_owner_t *related_owner,
 				 unsigned int init_seqid, bool_t *pisnew,
-				 care_t care);
+				 care_t care, bool_t confirm);
 
 int Init_nfs4_owner(void);
 
@@ -681,14 +679,6 @@ void state_export_unlock_all(void);
 bool state_lock_wipe(struct state_hdl *hstate);
 
 void cancel_all_nlm_blocked(void);
-
-static inline void *convert_lock_owner(struct fsal_export *fsal_export,
-				       state_owner_t *owner)
-{
-	return fsal_export->exp_ops.fs_supports(fsal_export,
-						fso_lock_support_owner)
-			? owner : NULL;
-}
 
 /******************************************************************************
  *
@@ -882,7 +872,8 @@ bool deleg_supported(struct fsal_obj_handle *obj,
 bool can_we_grant_deleg(struct state_hdl *ostate, state_t *open_state);
 bool should_we_grant_deleg(struct state_hdl *ostate, nfs_client_id_t *client,
 			   state_t *open_state, OPEN4args *args,
-			   state_owner_t *owner, bool *prerecall);
+			   OPEN4resok *resok, state_owner_t *owner,
+			   bool *prerecall);
 void init_new_deleg_state(union state_data *deleg_state,
 			  open_delegation_type4 sd_type,
 			  nfs_client_id_t *clientid);
@@ -923,66 +914,19 @@ void revoke_owner_layouts(state_owner_t *client_owner);
 
 #define OPEN4_SHARE_ACCESS_NONE 0
 
-state_status_t state_share_add(struct fsal_obj_handle *obj,
-			       state_owner_t *owner,
-			       /* state that holds share bits to be added */
-			       state_t *state, bool reclaim);
-
-state_status_t state_share_remove(struct fsal_obj_handle *obj,
-				  state_owner_t *owner,
-				  /* state that holds share bits to be removed
-				   */
-				  state_t *state);
-
-state_status_t state_share_upgrade(struct fsal_obj_handle *obj,
-				   /* new share bits */
-				   union state_data *state_data,
-				   state_owner_t *owner,
-				   /* state that holds current share bits */
-				   state_t *state, bool reclaim);
-
-state_status_t state_share_downgrade(struct fsal_obj_handle *obj,
-				     /* new share bits */
-				     union state_data *state_data,
-				     state_owner_t *owner,
-				     /* state that holds current share bits */
-				     state_t *state);
-
-state_status_t state_share_set_prev(state_t *state,
-				    union state_data *state_data);
-
 enum share_bypass_modes {
 	SHARE_BYPASS_NONE,
 	SHARE_BYPASS_READ,
 	SHARE_BYPASS_V3_WRITE
 };
 
-state_status_t state_share_check_conflict(struct state_hdl *ostate,
-					  int share_acccess,
-					  int share_deny,
-					  enum share_bypass_modes bypass);
-bool state_open_deleg_conflict(struct state_hdl *ostate,
-			       const state_t *open_state);
-
-state_status_t state_share_anonymous_io_start(struct fsal_obj_handle *obj,
-					      int share_access,
-					      enum share_bypass_modes bypass);
-
-void state_share_anonymous_io_done(struct fsal_obj_handle *obj,
-				   int share_access);
-
 state_status_t state_nlm_share(struct fsal_obj_handle *obj,
 			       int share_access,
 			       int share_deny,
 			       state_owner_t *owner,
 			       state_t *state,
-			       bool reclaim);
-
-state_status_t state_nlm_unshare(struct fsal_obj_handle *obj,
-				 int share_access,
-				 int share_deny,
-				 state_owner_t *owner,
-				 state_t *state);
+			       bool reclaim,
+			       bool unshare);
 
 void state_share_wipe(struct state_hdl *ostate);
 void state_export_unshare_all(void);
@@ -1021,14 +965,15 @@ void blocked_lock_polling(struct fridgethr_context *ctx);
  *
  ******************************************************************************/
 
-void nfs4_start_grace(nfs_grace_start_t *gsp);
-int nfs_in_grace(void);
+void nfs_start_grace(nfs_grace_start_t *gsp);
+bool nfs_in_grace(void);
+void nfs_try_lift_grace(void);
 void nfs4_add_clid(nfs_client_id_t *);
-void nfs4_rm_clid(const char *, char *, int);
+void nfs4_rm_clid(nfs_client_id_t *);
+void nfs4_recovery_reclaim_complete(nfs_client_id_t *clientid);
 void nfs4_chk_clid(nfs_client_id_t *);
-void nfs4_load_recov_clids(nfs_grace_start_t *gsp);
-void nfs4_clean_old_recov_dir(char *);
-void nfs4_create_recov_dir(void);
+void nfs4_recovery_cleanup(void);
+void nfs4_recovery_init(void);
 void nfs4_record_revoke(nfs_client_id_t *, nfs_fh4 *);
 bool nfs4_check_deleg_reclaim(nfs_client_id_t *, nfs_fh4 *);
 
@@ -1054,6 +999,28 @@ static inline bool obj_is_junction(struct fsal_obj_handle *obj)
 
 	return res;
 }
+
+typedef clid_entry_t * (*add_clid_entry_hook)(char *);
+typedef rdel_fh_t * (*add_rfh_entry_hook)(clid_entry_t *, char *);
+
+struct nfs4_recovery_backend {
+	void (*recovery_init)(void);
+	void (*recovery_cleanup)(void);
+	void (*recovery_read_clids)(nfs_grace_start_t *gsp,
+				    add_clid_entry_hook add_clid,
+				    add_rfh_entry_hook add_rfh);
+	void (*add_clid)(nfs_client_id_t *);
+	void (*rm_clid)(nfs_client_id_t *);
+	void (*add_revoke_fh)(nfs_client_id_t *, nfs_fh4 *);
+};
+
+void fs_backend_init(struct nfs4_recovery_backend **);
+void fs_ng_backend_init(struct nfs4_recovery_backend **);
+#ifdef USE_RADOS_RECOV
+int rados_kv_set_param_from_conf(config_file_t, struct config_error_type *);
+void rados_kv_backend_init(struct nfs4_recovery_backend **);
+void rados_ng_backend_init(struct nfs4_recovery_backend **);
+#endif
 
 #endif				/* SAL_FUNCTIONS_H */
 

@@ -91,15 +91,9 @@ void nfs_SetPostOpAttr(struct fsal_obj_handle *obj,
 		(void) obj->obj_ops.getattrs(obj, pattrs);
 	}
 
-	if (pattrs->valid_mask == ATTR_RDATTR_ERR) {
-		/* Indicate no attributes follow */
-		Fattr->attributes_follow = false;
-	} else {
-		/* Place the following attributes */
-		nfs3_FSALattr_To_Fattr(obj, pattrs,
+	/* Check if attributes follow and place the following attributes */
+	Fattr->attributes_follow = nfs3_FSALattr_To_Fattr(obj, pattrs,
 				       &Fattr->post_op_attr_u.attributes);
-		Fattr->attributes_follow = true;
-	}
 
 	if (attrs == NULL) {
 		/* Release any attributes fetched. Caller MUST release any
@@ -275,9 +269,9 @@ bool nfs_RetryableError(fsal_errors_t fsal_errors)
 	}
 
 	/* Should never reach this */
-	LogDebug(COMPONENT_NFSPROTO,
-		 "fsal_errors=%u not managed properly in nfs_RetryableError, line %u should never be reached",
-		 fsal_errors, __LINE__);
+	LogCrit(COMPONENT_NFSPROTO,
+		"fsal_errors=%u not managed properly in %s",
+		 fsal_errors, __func__);
 	return false;
 }
 /**
@@ -979,8 +973,8 @@ static fattr_xdr_result encode_cansettime(XDR *xdr,
 
 	if (args->data != NULL) {
 		export = op_ctx->fsal_export;
-		cansettime = export->exp_ops.
-				fs_supports(export, fso_cansettime);
+		cansettime =
+			export->exp_ops.fs_supports(export, fso_cansettime);
 	}
 	if (!inline_xdr_bool(xdr, &cansettime))
 		return FATTR_XDR_FAILED;
@@ -1182,9 +1176,8 @@ static fattr_xdr_result decode_files_avail(XDR *xdr,
 					   struct xdr_attrs_args *args)
 {
 	return inline_xdr_u_int64_t(xdr,
-				    &args->dynamicinfo->
-				    avail_files) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+				    &args->dynamicinfo->avail_files)
+					? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1206,9 +1199,8 @@ static fattr_xdr_result decode_files_free(XDR *xdr,
 					  struct xdr_attrs_args *args)
 {
 	return inline_xdr_u_int64_t(xdr,
-				    &args->dynamicinfo->
-				    free_files) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+				    &args->dynamicinfo->free_files)
+					? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1230,9 +1222,8 @@ static fattr_xdr_result decode_files_total(XDR *xdr,
 					   struct xdr_attrs_args *args)
 {
 	return xdr_u_int64_t(xdr,
-			     &args->dynamicinfo->
-			     total_files) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+			     &args->dynamicinfo->total_files)
+				? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1304,10 +1295,9 @@ void nfs4_pathname4_free(pathname4 *pathname4)
 	while (i-- > 0) {
 		if (pathname4->pathname4_val[i].utf8string_val != NULL) {
 			LogFullDebug(COMPONENT_NFS_V4,
-				     "freeing component %d: %s",
-				     i+1,
-				     pathname4->pathname4_val[i].
-				     utf8string_val);
+				"freeing component %d: %s",
+				i+1,
+				pathname4->pathname4_val[i].utf8string_val);
 			gsh_free(pathname4->pathname4_val[i].utf8string_val);
 			pathname4->pathname4_val[i].utf8string_val = NULL;
 		}
@@ -1365,7 +1355,7 @@ static fattr_xdr_result encode_fs_locations(XDR *xdr,
 		fs_server.utf8string_len = strlen(server);
 
 		LogDebug(COMPONENT_NFS_V4,
-			 "encode_fs_locations obj_ops.fs_locations failed %s, %s, %s",
+			 "encode fs_locations obj_ops.fs_locations failed %s, %s, %s",
 			 fs_locs.fs_root.pathname4_val->utf8string_val,
 			 fs_loc.rootpath.pathname4_val->utf8string_val,
 			 server);
@@ -1374,7 +1364,7 @@ static fattr_xdr_result encode_fs_locations(XDR *xdr,
 
 	if (!xdr_fs_locations4(xdr, &fs_locs)) {
 		LogEvent(COMPONENT_NFS_V4,
-			 "encode_fs_locations xdr_fs_locations failed %s, %s, %s",
+			 "encode fs_locations xdr_fs_locations failed %s, %s, %s",
 			 fs_locs.fs_root.pathname4_val->utf8string_val,
 			 fs_loc.rootpath.pathname4_val->utf8string_val,
 			 server);
@@ -1427,8 +1417,8 @@ static fattr_xdr_result encode_homogeneous(XDR *xdr,
 
 	if (args->data != NULL) {
 		export = op_ctx->fsal_export;
-		homogeneous = export->exp_ops.
-				fs_supports(export, fso_homogenous);
+		homogeneous =
+			export->exp_ops.fs_supports(export, fso_homogenous);
 	}
 	if (!inline_xdr_bool(xdr, &homogeneous))
 		return FATTR_XDR_FAILED;
@@ -1541,9 +1531,8 @@ static fattr_xdr_result encode_maxread(XDR *xdr, struct xdr_attrs_args *args)
 static fattr_xdr_result decode_maxread(XDR *xdr, struct xdr_attrs_args *args)
 {
 	return xdr_u_int64_t(xdr,
-			     &args->dynamicinfo->
-			     maxread) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+			     &args->dynamicinfo->maxread)
+				? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1563,9 +1552,8 @@ static fattr_xdr_result encode_maxwrite(XDR *xdr, struct xdr_attrs_args *args)
 static fattr_xdr_result decode_maxwrite(XDR *xdr, struct xdr_attrs_args *args)
 {
 	return xdr_u_int64_t(xdr,
-			     &args->dynamicinfo->
-			     maxwrite) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+			     &args->dynamicinfo->maxwrite)
+				? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1861,9 +1849,8 @@ static fattr_xdr_result decode_sace_avail(XDR *xdr,
 					   struct xdr_attrs_args *args)
 {
 	return inline_xdr_u_int64_t(xdr,
-				    &args->dynamicinfo->
-				    avail_bytes) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+				    &args->dynamicinfo->avail_bytes)
+					? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1885,9 +1872,8 @@ static fattr_xdr_result decode_sace_free(XDR *xdr,
 					  struct xdr_attrs_args *args)
 {
 	return inline_xdr_u_int64_t(xdr,
-				    &args->dynamicinfo->
-				    free_bytes) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+				    &args->dynamicinfo->free_bytes)
+					? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -1909,9 +1895,8 @@ static fattr_xdr_result decode_sace_total(XDR *xdr,
 					   struct xdr_attrs_args *args)
 {
 	return inline_xdr_u_int64_t(xdr,
-				    &args->dynamicinfo->
-				    total_bytes) ? FATTR_XDR_SUCCESS :
-	    FATTR_XDR_FAILED;
+				    &args->dynamicinfo->total_bytes)
+					? FATTR_XDR_SUCCESS : FATTR_XDR_FAILED;
 }
 
 /*
@@ -2369,8 +2354,8 @@ static fattr_xdr_result encode_layout_blocksize(XDR *xdr,
 		return FATTR_XDR_NOOP;
 	} else {
 		struct fsal_export *export = op_ctx->fsal_export;
-		uint32_t blocksize = export->exp_ops.
-					fs_layout_blocksize(export);
+		uint32_t blocksize =
+				export->exp_ops.fs_layout_blocksize(export);
 
 		if (!inline_xdr_u_int32_t(xdr, &blocksize))
 			return FATTR_XDR_FAILED;
@@ -3750,13 +3735,14 @@ bool nfs3_Sattr_To_FSALattr(struct attrlist *FSAL_attr, sattr3 *sattr)
 			     sattr->atime.set_atime_u.atime.tv_nsec);
 		if (sattr->atime.set_it == SET_TO_CLIENT_TIME) {
 			FSAL_attr->atime.tv_sec =
-			    sattr->atime.set_atime_u.atime.tv_sec;
-			FSAL_attr->atime.tv_nsec = 0;
+				sattr->atime.set_atime_u.atime.tv_sec;
+			FSAL_attr->atime.tv_nsec =
+				sattr->atime.set_atime_u.atime.tv_nsec;
 			FSAL_attr->valid_mask |= ATTR_ATIME;
 		} else if (sattr->atime.set_it == SET_TO_SERVER_TIME) {
 			/* Use the server's current time */
 			LogFullDebug(COMPONENT_NFSPROTO,
-				     "nfs3_Sattr_To_FSALattr: SET_TO_SERVER_TIME atime");
+				     "SET_TO_SERVER_TIME atime");
 			FSAL_attr->valid_mask |= ATTR_ATIME_SERVER;
 		} else {
 			LogCrit(COMPONENT_NFSPROTO,
@@ -3772,13 +3758,14 @@ bool nfs3_Sattr_To_FSALattr(struct attrlist *FSAL_attr, sattr3 *sattr)
 			     sattr->mtime.set_mtime_u.mtime.tv_sec);
 		if (sattr->mtime.set_it == SET_TO_CLIENT_TIME) {
 			FSAL_attr->mtime.tv_sec =
-			    sattr->mtime.set_mtime_u.mtime.tv_sec;
-			FSAL_attr->mtime.tv_nsec = 0;
+				sattr->mtime.set_mtime_u.mtime.tv_sec;
+			FSAL_attr->mtime.tv_nsec =
+				sattr->mtime.set_mtime_u.mtime.tv_nsec;
 			FSAL_attr->valid_mask |= ATTR_MTIME;
 		} else if (sattr->mtime.set_it == SET_TO_SERVER_TIME) {
 			/* Use the server's current time */
 			LogFullDebug(COMPONENT_NFSPROTO,
-				     "nfs3_Sattr_To_FSALattr: SET_TO_SERVER_TIME Mtime");
+				     "SET_TO_SERVER_TIME Mtime");
 			FSAL_attr->valid_mask |= ATTR_MTIME_SERVER;
 		} else {
 			LogCrit(COMPONENT_NFSPROTO,
@@ -3802,19 +3789,16 @@ bool nfs3_Sattr_To_FSALattr(struct attrlist *FSAL_attr, sattr3 *sattr)
  *
  * Fill in the fields in the fattr3 structure.
  *
- * @param[in]    FSAL_attr  FSAL attributes.
- * @param[out]   mask       Attributes which have been copied
+ * @param[in]    obj        FSAL object.
+ * @param[in]    FSAL_attr  FSAL attributes related to the FSAL object.
  * @param[out]   Fattr      NFSv3 attributes.
  *
  */
 static void nfs3_FSALattr_To_PartialFattr(struct fsal_obj_handle *obj,
 					  const struct attrlist *FSAL_attr,
-					  attrmask_t *mask, fattr3 *Fattr)
+					  fattr3 *Fattr)
 {
-	*mask = 0;
-
 	if (FSAL_attr->valid_mask & ATTR_TYPE) {
-		*mask |= ATTR_TYPE;
 		switch (FSAL_attr->type) {
 		case FIFO_FILE:
 			Fattr->type = NF3FIFO;
@@ -3849,44 +3833,36 @@ static void nfs3_FSALattr_To_PartialFattr(struct fsal_obj_handle *obj,
 			LogEvent(COMPONENT_NFSPROTO,
 				 "nfs3_FSALattr_To_Fattr: Bogus type = %d",
 				 FSAL_attr->type);
-			*mask &= ~ATTR_TYPE;
 		}
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_MODE) {
 		Fattr->mode = fsal2unix_mode(FSAL_attr->mode);
-		*mask |= ATTR_MODE;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_NUMLINKS) {
 		Fattr->nlink = FSAL_attr->numlinks;
-		*mask |= ATTR_NUMLINKS;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_OWNER) {
 		Fattr->uid = FSAL_attr->owner;
-		*mask |= ATTR_OWNER;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_GROUP) {
 		Fattr->gid = FSAL_attr->group;
-		*mask |= ATTR_GROUP;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_SIZE) {
 		Fattr->size = FSAL_attr->filesize;
-		*mask |= ATTR_SIZE;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_SPACEUSED) {
 		Fattr->used = FSAL_attr->spaceused;
-		*mask |= ATTR_SPACEUSED;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_RAWDEV) {
 		Fattr->rdev.specdata1 = FSAL_attr->rawdev.major;
 		Fattr->rdev.specdata2 = FSAL_attr->rawdev.minor;
-		*mask |= ATTR_RAWDEV;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_FSID) {
@@ -3905,31 +3881,25 @@ static void nfs3_FSALattr_To_PartialFattr(struct fsal_obj_handle *obj,
 			     obj->fsid.minor,
 			     obj->fsid.minor,
 			     (uint64_t) Fattr->fsid, (uint64_t) Fattr->fsid);
-
-		*mask |= ATTR_FSID;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_FILEID) {
 		Fattr->fileid = obj->fileid;
-		*mask |= ATTR_FILEID;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_ATIME) {
 		Fattr->atime.tv_sec = FSAL_attr->atime.tv_sec;
 		Fattr->atime.tv_nsec = FSAL_attr->atime.tv_nsec;
-		*mask |= ATTR_ATIME;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_MTIME) {
 		Fattr->mtime.tv_sec = FSAL_attr->mtime.tv_sec;
 		Fattr->mtime.tv_nsec = FSAL_attr->mtime.tv_nsec;
-		*mask |= ATTR_MTIME;
 	}
 
 	if (FSAL_attr->valid_mask & ATTR_CTIME) {
 		Fattr->ctime.tv_sec = FSAL_attr->ctime.tv_sec;
 		Fattr->ctime.tv_nsec = FSAL_attr->ctime.tv_nsec;
-		*mask |= ATTR_CTIME;
 	}
 }				/* nfs3_FSALattr_To_PartialFattr */
 
@@ -3944,23 +3914,25 @@ static void nfs3_FSALattr_To_PartialFattr(struct fsal_obj_handle *obj,
  * @param FSAL_attr [IN]  pointer to FSAL attributes.
  * @param Fattr     [OUT] pointer to NFSv3 attributes.
  *
+ * @return true if successful, false otherwise.
+ *
  */
-void nfs3_FSALattr_To_Fattr(struct fsal_obj_handle *obj,
+bool nfs3_FSALattr_To_Fattr(struct fsal_obj_handle *obj,
 			    const struct attrlist *FSAL_attr,
 			    fattr3 *Fattr)
 {
 	/* We want to override the FSAL fsid with the export's configured fsid
 	 */
 	attrmask_t want = ATTRS_NFS3;
-	attrmask_t got = 0;
 
-	nfs3_FSALattr_To_PartialFattr(obj, FSAL_attr, &got, Fattr);
-	if (want & ~got) {
+	if ((want & FSAL_attr->valid_mask) != want) {
 		LogCrit(COMPONENT_NFSPROTO,
 			"Likely bug: FSAL did not fill in a standard NFSv3 attribute: missing %"
 			PRIx64,
-			want & ~got);
+			want & ~(FSAL_attr->valid_mask));
+		return false;
 	}
+	nfs3_FSALattr_To_PartialFattr(obj, FSAL_attr, Fattr);
 
 	if (op_ctx_export_has_option_set(EXPORT_OPTION_FSID_SET)) {
 		/* xor filesystem_id major and rotated minor to create unique
@@ -3980,6 +3952,7 @@ void nfs3_FSALattr_To_Fattr(struct fsal_obj_handle *obj,
 			     op_ctx->ctx_export->filesystem_id.minor,
 			     (uint64_t) Fattr->fsid, (uint64_t) Fattr->fsid);
 	}
+	return true;
 }
 
 /**
@@ -4019,7 +3992,8 @@ bool nfs4_Fattr_Check_Access_Bitmap(struct bitmap4 *bitmap, int access)
  * Checks if attributes have READ or WRITE access.
  *
  * @param Fattr      [IN] pointer to NFSv4 attributes.
- * @param access     [IN] access to be checked, either FATTR4_ATTR_READ or FATTR4_ATTR_WRITE
+ * @param access     [IN] access to be checked, either FATTR4_ATTR_READ or
+ *                        FATTR4_ATTR_WRITE
  *
  * @return true if successful, false otherwise.
  *
@@ -4100,7 +4074,8 @@ bool nfs4_Fattr_Supported(fattr4 *Fattr)
  * @param Fattr1      [IN] pointer to NFSv4 attributes.
  * @param Fattr2      [IN] pointer to NFSv4 attributes.
  *
- * @return 1 if attributes are the same, 0 otherwise, but -1 if RDATTR_ERROR is set
+ * @return 1 if attributes are the same, 0 otherwise, but -1 if RDATTR_ERROR is
+ *           set
  *
  */
 int nfs4_Fattr_cmp(fattr4 *Fattr1, fattr4 *Fattr2)
@@ -4149,7 +4124,7 @@ int nfs4_Fattr_cmp(fattr4 *Fattr1, fattr4 *Fattr2)
 			continue;
 		}
 		LogFullDebug(COMPONENT_NFS_V4,
-			     "nfs4_Fattr_cmp ==============> %s",
+			     "Comparing %s",
 			     fattr4tab[attribute_to_set].name);
 
 		switch (attribute_to_set) {

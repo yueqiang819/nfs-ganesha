@@ -94,10 +94,10 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	void *data = NULL;
 	bool eof_met = false;
 	int rc = NFS_REQ_OK;
-	bool sync = false;
 	uint64_t MaxRead = atomic_fetch_uint64_t(&op_ctx->ctx_export->MaxRead);
 	uint64_t MaxOffsetRead =
 		atomic_fetch_uint64_t(&op_ctx->ctx_export->MaxOffsetRead);
+	READ3resfail *resfail = &res->res_read3.READ3res_u.resfail;
 
 	if (isDebug(COMPONENT_NFSPROTO)) {
 		char str[LEN_FH_STR];
@@ -114,8 +114,8 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	}
 
 	/* to avoid setting it on each error case */
-	res->res_read3.READ3res_u.resfail.file_attributes.attributes_follow =
-	    FALSE;
+	resfail->file_attributes.attributes_follow =  FALSE;
+
 	/* initialize for read of size 0 */
 	res->res_read3.READ3res_u.resok.eof = FALSE;
 	res->res_read3.READ3res_u.resok.count = 0;
@@ -180,10 +180,7 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 
 			res->res_read3.status = NFS3ERR_FBIG;
 
-			nfs_SetPostOpAttr(obj,
-					  &res->res_read3.READ3res_u.resfail.
-						file_attributes,
-					  NULL);
+			nfs_SetPostOpAttr(obj, &resfail->file_attributes, NULL);
 
 			rc = NFS_REQ_OK;
 			goto out;
@@ -206,44 +203,25 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 	} else {
 		data = gsh_malloc(size);
 
-		res->res_read3.status = nfs3_Errno_state(
-				state_share_anonymous_io_start(
-					obj,
-					OPEN4_SHARE_ACCESS_READ,
-					SHARE_BYPASS_READ));
-
-		if (res->res_read3.status != NFS3_OK) {
+		/* Check for delegation conflict. */
+		if (state_deleg_conflict(obj, false)) {
+			res->res_read3.status = NFS3ERR_JUKEBOX;
 			rc = NFS_REQ_OK;
 			gsh_free(data);
 			goto out;
 		}
 
-		if (obj->fsal->m_ops.support_ex(obj)) {
-			/* Call the new fsal_read2 */
-			/** @todo for now pass NULL state */
-			fsal_status = fsal_read2(obj,
-						  true,
-						  NULL,
-						  offset,
-						  size,
-						  &read_size,
-						  data,
-						  &eof_met,
-						  NULL);
-		} else {
-			/* Call legacy fsal_rdwr */
-			fsal_status = fsal_rdwr(obj,
-						FSAL_IO_READ,
-						offset,
-						size,
-						&read_size,
-						data,
-						&eof_met,
-						&sync,
-						NULL);
-		}
-
-		state_share_anonymous_io_done(obj, OPEN4_SHARE_ACCESS_READ);
+		/* Call the new fsal_read2 */
+		/** @todo for now pass NULL state */
+		fsal_status = fsal_read2(obj,
+					  true,
+					  NULL,
+					  offset,
+					  size,
+					  &read_size,
+					  data,
+					  &eof_met,
+					  NULL);
 
 		if (!FSAL_IS_ERROR(fsal_status)) {
 			nfs_read_ok(req, res, data, read_size, obj, eof_met);
@@ -261,9 +239,7 @@ int nfs3_read(nfs_arg_t *arg, struct svc_req *req, nfs_res_t *res)
 
 	res->res_read3.status = nfs3_Errno_status(fsal_status);
 
-	nfs_SetPostOpAttr(obj,
-			  &res->res_read3.READ3res_u.resfail.file_attributes,
-			  NULL);
+	nfs_SetPostOpAttr(obj, &resfail->file_attributes, NULL);
 
 	rc = NFS_REQ_OK;
 

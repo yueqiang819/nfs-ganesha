@@ -22,9 +22,10 @@ MEM {}
 RGW {}
 VFS {}
 XFS {}
-ZFS {}
 PROXY {}
 PROXY { Remote_Server {} }
+RADOS_KV {}
+RADOS_URLS {}
 
 Notably the following FSALs do not have a global config block:
 
@@ -61,10 +62,6 @@ NFS_CORE_PARAM {}
 
 	Drop_Delay_Errors(bool, default false)
 
-	Dispatch_Max_Reqs(uint32, range 1 to 1024*128*16, default 5000)
-
-	Dispatch_Max_Reqs_Xprt(uint32, range 1 to 2048, default 512)
-
 	DRC_Disabled(boo, default false)
 
 	DRC_TCP_Npart(uint32, range 1 to 20, default 1)
@@ -91,8 +88,6 @@ NFS_CORE_PARAM {}
 
 	DRC_UDP_Checksum(bool, default true)
 
-	RPC_Debug_Flags(uint32, range 0 to UINT32_MAX, default 0)
-
 	RPC_Max_Connections(uint32, range 1 to 10000, default 1024)
 
 	RPC_Idle_Timeout_S(uint32, range 0 to 60*60, default 300)
@@ -108,10 +103,6 @@ NFS_CORE_PARAM {}
 	RPC_GSS_Max_Ctx(uint32, range 1 to 1048576, default 16384)
 
 	RPC_GSS_Max_Gc(uint32, range 1 to 1048576, default 200)
-
-	Decoder_Fridge_Expiration_Delay(int64, range 0 to 7200, default 600)
-
-	Decoder_Fridge_Block_Timeout(int64, range 0 to 7200, default 600)
 
 	Blocked_Lock_Poller_Interval(int64, range 0 to 180, default 10)
 
@@ -133,7 +124,11 @@ NFS_CORE_PARAM {}
 
 	TCP_KEEPINTVL(INT32, range 0 to 65535, default 0 -> use system defaults)
 
+	Enable_NFS_Stats(bool, default true)
+
 	Enable_Fast_Stats(bool, default false)
+
+	Enable_FSAL_Stats(bool, default false)
 
 	Short_File_Handle(bool, default false)
 
@@ -146,6 +141,8 @@ NFS_CORE_PARAM {}
 	fsid_device(bool, default false)
 
 	mount_path_pseudo(bool, default false)
+
+	Dbus_Name_Prefix(string, default NULL)
 
 NFS_IP_NAME {}
 --------------
@@ -187,6 +184,11 @@ NFSV4 {}
 
 	Delegations(bool, default false)
 
+	RecoveryBackend(path, default "fs")
+
+	Minor_Versions(enum list, values [0, 1, 2], default [0, 1, 2])
+
+	Slot_Table_Size(uint32, range 1 to 1024, default 64)
 
 EXPORT_DEFAULTS {}
 ------------------
@@ -345,6 +347,13 @@ EXPORT { FSAL {} }
 
 	glfs_log(path, default "/tmp/gfapi.log")
 
+        up_poll_usec(uint64, range 1 to 60*1000*1000, default 10)
+
+        * up_poll_usec: The time interval (in micro-seconds) between any
+          two consecutive upcall polls. By default set to 10us.
+
+	enable_upcall(bool, default true)
+
 	FSAL_VFS:
 	---------
 
@@ -352,11 +361,6 @@ EXPORT { FSAL {} }
 
 	fsid_type(enum, values [None, One64, Major64, Two64, uuid, Two32, Dev,
 			        Device], no default)
-
-	FSAL_ZFS:
-	---------
-
-	zpool(string, default "tank", must be supplied)
 
 	EXPORT { FSAL { PNFS { } } }
 	---------------------------
@@ -377,6 +381,8 @@ LOG {}
 	Default_log_level(token, values [NULL, FATAL, MAJ, CRIT, WARN, EVENT,
 					 INFO, DEBUG, MID_DEBUG, M_DBG,
 					 FULL_DEBUG, F_DBG], default EVENT)
+
+	RPC_Debug_Flags(uint32, range 0 to UINT32_MAX, default 7)
 
 LOG { COMPONENTS {} }
 ---------------------
@@ -640,25 +646,6 @@ XFS {}
 
 	xattr_access_rights(mode, range 0 to 0777, default 0400)
 
-ZFS {}
-------
-
-	link_support(bool, default true)
-
-	symlink_support(bool, default true)
-
-	cansettime(bool, default true)
-
-	maxread(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	maxwrite(uint64, range 512 to 64*1024*1024, default 64*1024*1024)
-
-	umask(mode, range 0 to 0777, default 0)
-
-	auth_xdev_export(bool, default false)
-
-	xattr_access_rights(mode, range 0 to 0777, default 0400)
-
 PROXY {}
 --------
 
@@ -730,3 +717,19 @@ PROXY { Remote_Server {} }
 	HandleMap_DB_Count(uint32, range 1 to 16, default 8)
 
 	HandleMap_HashTable_Size(uint32, range 1 to 127, default 103)
+
+RADOS_KV {}
+--------
+
+	ceph_conf(string, no default)
+
+	userid(path, no default)
+
+	pool(string, no default)
+
+RADOS_URLS {}
+--------
+
+	ceph_conf(string, no default)
+
+	userid(path, no default)
