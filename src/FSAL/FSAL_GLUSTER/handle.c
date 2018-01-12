@@ -130,7 +130,7 @@ static fsal_status_t lookup(struct fsal_obj_handle *parent,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -172,6 +172,14 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 	    container_of(op_ctx->fsal_export, struct glusterfs_export, export);
 	struct glusterfs_handle *objhandle =
 	    container_of(dir_hdl, struct glusterfs_handle, handle);
+
+#ifdef USE_GLUSTER_XREADDIRPLUS
+	struct glfs_object *glhandle = NULL;
+	struct glfs_xreaddirp_stat *xstat = NULL;
+	uint32_t flags =
+		 (GFAPI_XREADDIRP_STAT | GFAPI_XREADDIRP_HANDLE);
+#endif
+
 #ifdef GLTIMING
 	struct timespec s_time, e_time;
 
@@ -205,42 +213,86 @@ static fsal_status_t read_dirents(struct fsal_obj_handle *dir_hdl,
 				  op_ctx->creds->caller_glen,
 				  op_ctx->creds->caller_garray);
 
+#ifndef USE_GLUSTER_XREADDIRPLUS
 		rc = glfs_readdir_r(glfd, &de, &pde);
+#else
+		rc = glfs_xreaddirplus_r(glfd, flags, &xstat, &de, &pde);
+#endif
 
 		SET_GLUSTER_CREDS(glfs_export, NULL, NULL, 0, NULL);
 
-		if (rc == 0 && pde != NULL) {
-			struct attrlist attrs;
-			enum fsal_dir_result cb_rc;
-
-			/* skip . and .. */
-			if ((strcmp(de.d_name, ".") == 0)
-			    || (strcmp(de.d_name, "..") == 0)) {
-				continue;
-			}
-			fsal_prepare_attrs(&attrs, attrmask);
-
-			status = lookup(dir_hdl, de.d_name, &obj, &attrs);
-			if (FSAL_IS_ERROR(status))
-				goto out;
-
-			cb_rc = cb(de.d_name, obj, &attrs,
-				   dir_state, glfs_telldir(glfd));
-
-			fsal_release_attrs(&attrs);
-
-			/* Read ahead not supported by this FSAL. */
-			if (cb_rc >= DIR_READAHEAD)
-				goto out;
-		} else if (rc == 0 && pde == NULL) {
-			*eof = true;
-		} else {
+		if (rc < 0) {
 			status = gluster2fsal_error(errno);
 			goto out;
 		}
+
+		if (rc == 0 && pde == NULL) {
+			*eof = true;
+			goto out;
+		}
+
+		struct attrlist attrs;
+		enum fsal_dir_result cb_rc;
+
+		/* skip . and .. */
+		if ((strcmp(de.d_name, ".") == 0)
+		    || (strcmp(de.d_name, "..") == 0)) {
+			continue;
+		}
+		fsal_prepare_attrs(&attrs, attrmask);
+
+#ifndef USE_GLUSTER_XREADDIRPLUS
+		status = lookup(dir_hdl, de.d_name, &obj, &attrs);
+		if (FSAL_IS_ERROR(status))
+			goto out;
+#else
+		struct glfs_object *tmp = NULL;
+		struct stat *sb;
+
+		if (!xstat || !(rc & GFAPI_XREADDIRP_HANDLE)) {
+			status = gluster2fsal_error(errno);
+			goto out;
+		}
+
+		sb = glfs_xreaddirplus_get_stat(xstat);
+		tmp = glfs_xreaddirplus_get_object(xstat);
+
+		if (!sb || !tmp) {
+			status = gluster2fsal_error(errno);
+			goto out;
+		}
+
+		glhandle = glfs_object_copy(tmp);
+		if (!glhandle) {
+			status = gluster2fsal_error(errno);
+			goto out;
+		}
+
+		status = glfs2fsal_handle(glfs_export, glhandle, &obj,
+					  sb, &attrs);
+		glfs_free(xstat);
+		xstat = NULL;
+
+		if (FSAL_IS_ERROR(status)) {
+			gluster_cleanup_vars(glhandle);
+			goto out;
+		}
+#endif
+		cb_rc = cb(de.d_name, obj, &attrs,
+			   dir_state, glfs_telldir(glfd));
+
+		fsal_release_attrs(&attrs);
+
+		/* Read ahead not supported by this FSAL. */
+		if (cb_rc >= DIR_READAHEAD)
+			goto out;
 	}
 
  out:
+#ifdef USE_GLUSTER_XREADDIRPLUS
+	if (xstat)
+		glfs_free(xstat);
+#endif
 	SET_GLUSTER_CREDS(glfs_export, &op_ctx->creds->caller_uid,
 			  &op_ctx->creds->caller_gid,
 			  op_ctx->creds->caller_glen,
@@ -386,7 +438,7 @@ static fsal_status_t makedir(struct fsal_obj_handle *dir_hdl,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -512,7 +564,7 @@ static fsal_status_t makenode(struct fsal_obj_handle *dir_hdl,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -613,7 +665,7 @@ static fsal_status_t makesymlink(struct fsal_obj_handle *dir_hdl,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -1562,10 +1614,6 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 	} else if (!errno)
                 created = true;
 
-       /* preserve errno */
-	retval = errno;
-
-
 	/* restore credentials */
 	SET_GLUSTER_CREDS(glfs_export, NULL, NULL, 0, NULL);
 
@@ -1610,12 +1658,14 @@ static fsal_status_t glusterfs_open2(struct fsal_obj_handle *obj_hdl,
 	retval = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 				   GLAPI_UUID_LENGTH);
 	if (retval < 0) {
-		status = gluster2fsal_error(retval);
+		status = gluster2fsal_error(errno);
 		goto direrr;
 	}
 
 	construct_handle(glfs_export, &sb, glhandle, globjhdl,
 			 GLAPI_HANDLE_LENGTH, &myself, vol_uuid);
+
+	*new_obj = &myself->handle;
 
 	/* If we didn't have a state above, use the global fd. At this point,
 	 * since we just created the global fd, no one else can have a
@@ -1633,8 +1683,6 @@ open:
 	if (FSAL_IS_ERROR(status))
 		goto direrr;
 
-	*new_obj = &myself->handle;
-
 	if (created && attrib_set->valid_mask != 0) {
 		/* Set attributes using our newly opened file descriptor as the
 		 * share_fd if there are any left to set (mode and truncate
@@ -1648,14 +1696,8 @@ open:
 						      state,
 						      attrib_set);
 
-		if (FSAL_IS_ERROR(status)) {
-			/* Release the handle we just allocated. */
-			(*new_obj)->obj_ops.release(*new_obj);
-			/* We released handle at this point */
-			glhandle = NULL;
-			*new_obj = NULL;
+		if (FSAL_IS_ERROR(status))
 			goto fileerr;
-		}
 
 		if (attrs_out != NULL) {
 			status = (*new_obj)->obj_ops.getattrs(*new_obj,
@@ -1699,9 +1741,22 @@ open:
 
 
 fileerr:
+	/* Avoiding use after freed, make sure close my_fd before
+	 * obj_ops.release(), glfs_close is called depends on
+	 * FSAL_O_CLOSED flags, it's harmless of closing my_fd twice
+	 * in the floowing obj_ops.release().
+	 */
 	glusterfs_close_my_fd(my_fd);
 
 direrr:
+	/* Release the handle we just allocated. */
+	if (*new_obj) {
+		(*new_obj)->obj_ops.release(*new_obj);
+		/* We released handle at this point */
+		glhandle = NULL;
+		*new_obj = NULL;
+	}
+
 	/* Delete the file if we actually created it. */
 	if (created) {
 		SET_GLUSTER_CREDS(glfs_export, &op_ctx->creds->caller_uid,
@@ -1718,7 +1773,6 @@ direrr:
 
 	if (status.major != ERR_FSAL_NO_ERROR)
 		gluster_cleanup_vars(glhandle);
-	return fsalstat(posix2fsal_error(retval), retval);
 
  out:
 #ifdef GLTIMING
@@ -2135,12 +2189,19 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 		return status;
 	}
 
-	/** @todo: setlkowner as well */
 	errno = 0;
 	SET_GLUSTER_CREDS(glfs_export, &op_ctx->creds->caller_uid,
 			  &op_ctx->creds->caller_gid,
 			  op_ctx->creds->caller_glen,
 			  op_ctx->creds->caller_garray);
+
+	/* Convert lkowner ptr address to opaque string */
+	retval = glfs_fd_set_lkowner(my_fd.glfd, p_owner, sizeof(p_owner));
+	if (retval) {
+		LogCrit(COMPONENT_FSAL,
+			"Setting lkowner failed");
+		goto err;
+	}
 
 	retval = glfs_posix_lock(my_fd.glfd, fcntl_comm, &lock_args);
 
@@ -2154,6 +2215,16 @@ static fsal_status_t glusterfs_lock_op2(struct fsal_obj_handle *obj_hdl,
 
 		if (conflicting_lock != NULL) {
 			/* Get the conflicting lock */
+
+			rc = glfs_fd_set_lkowner(my_fd.glfd, p_owner,
+						 sizeof(p_owner));
+			if (rc) {
+				retval = errno; /* we losethe initial error */
+				LogCrit(COMPONENT_FSAL,
+					"Setting lkowner while trying to get conflicting lock failed");
+				goto err;
+			}
+
 			rc = glfs_posix_lock(my_fd.glfd, F_GETLK,
 						 &lock_args);
 

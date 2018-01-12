@@ -331,4 +331,12 @@ size_t fs_da_addr_size(struct fsal_module *fsal_hdl);
 nfsstat4 getdeviceinfo(struct fsal_module *fsal_hdl,
 		       XDR *da_addr_body, const layouttype4 type,
 		       const struct pnfs_deviceid *deviceid);
+
+void fsal_gpfs_extract_stats(struct fsal_module *fsal_hdl, void *iter);
+
+void fsal_gpfs_reset_stats(struct fsal_module *fsal_hdl);
+
+void prepare_for_stats(struct fsal_module *fsal_hdl);
+
+int gpfs_op2index(int op);
 #endif

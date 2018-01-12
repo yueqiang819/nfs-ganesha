@@ -396,9 +396,6 @@ void nfs4_BuildStateId_Other(nfs_client_id_t *clientid, char *other);
 #define STATEID_SPECIAL_ALL_0 2	/*< Allow anonymous */
 #define STATEID_SPECIAL_ALL_1 4	/*< Allow read-bypass */
 #define STATEID_SPECIAL_CURRENT 8	/*< Allow current */
-#define STATEID_SPECIAL_FREE 0x100	/*< Check for FREE_STATEID */
-#define STATEID_SPECIAL_FOR_FREE (STATEID_SPECIAL_CURRENT | \
-				  STATEID_SPECIAL_FREE)
 
 /* The following flag tells nfs4_Check_Stateid this is a close call
  * and to ignore stateid that have valid clientid portion, but the
@@ -533,7 +530,7 @@ state_owner_t *create_nfs4_owner(state_nfs4_owner_name_t *name,
 				 state_owner_type_t type,
 				 state_owner_t *related_owner,
 				 unsigned int init_seqid, bool_t *pisnew,
-				 care_t care);
+				 care_t care, bool_t confirm);
 
 int Init_nfs4_owner(void);
 
@@ -1024,11 +1021,11 @@ void blocked_lock_polling(struct fridgethr_context *ctx);
 void nfs4_start_grace(nfs_grace_start_t *gsp);
 int nfs_in_grace(void);
 void nfs4_add_clid(nfs_client_id_t *);
-void nfs4_rm_clid(const char *, char *, int);
+void nfs4_rm_clid(nfs_client_id_t *);
 void nfs4_chk_clid(nfs_client_id_t *);
-void nfs4_load_recov_clids(nfs_grace_start_t *gsp);
-void nfs4_clean_old_recov_dir(char *);
-void nfs4_create_recov_dir(void);
+void nfs4_recovery_load_clids(nfs_grace_start_t *gsp);
+void nfs4_recovery_cleanup(void);
+void nfs4_recovery_init(void);
 void nfs4_record_revoke(nfs_client_id_t *, nfs_fh4 *);
 bool nfs4_check_deleg_reclaim(nfs_client_id_t *, nfs_fh4 *);
 
@@ -1054,6 +1051,29 @@ static inline bool obj_is_junction(struct fsal_obj_handle *obj)
 
 	return res;
 }
+
+typedef clid_entry_t * (*add_clid_entry_hook)(char *);
+typedef rdel_fh_t * (*add_rfh_entry_hook)(clid_entry_t *, char *);
+
+struct nfs4_recovery_backend {
+	void (*recovery_init)(void);
+	void (*recovery_cleanup)(void);
+	void (*recovery_read_clids_recover)(add_clid_entry_hook add_clid,
+					    add_rfh_entry_hook add_rfh);
+	void (*recovery_read_clids_takeover)(nfs_grace_start_t *gsp,
+					     add_clid_entry_hook add_clid,
+					     add_rfh_entry_hook add_rfh);
+	void (*add_clid)(nfs_client_id_t *);
+	void (*rm_clid)(nfs_client_id_t *);
+	void (*add_revoke_fh)(nfs_client_id_t *, nfs_fh4 *);
+	bool (*check_clid)(nfs_client_id_t *, clid_entry_t *);
+};
+
+void fs_backend_init(struct nfs4_recovery_backend **);
+#ifdef USE_RADOS_RECOV
+int rados_kv_set_param_from_conf(config_file_t, struct config_error_type *);
+void rados_kv_backend_init(struct nfs4_recovery_backend **);
+#endif
 
 #endif				/* SAL_FUNCTIONS_H */
 

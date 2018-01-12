@@ -20,7 +20,7 @@ set(GANESHA_MAJOR_VERSION 2)
 set(GANESHA_MINOR_VERSION 5)
 
 IF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
-set(GANESHA_BUILD_RELEASE 2)
+set(GANESHA_BUILD_RELEASE 4)
 ELSE()
 set(GANESHA_BUILD_RELEASE 0)
 ENDIF(CMAKE_BUILD_TYPE STREQUAL "Release" OR CMAKE_BUILD_TYPE STREQUAL "RelWithDebInfo")
@@ -39,7 +39,7 @@ ENDIF(CMAKE_INSTALL_PREFIX_INITIALIZED_TO_DEFAULT OR CMAKE_INSTALL_PREFIX STREQU
 # Patch level is always ".0" for mainline (master).  It is blank for development.
 # When starting a stable maintenance branch, this becomes ".N"
 # where N is monotonically increasing starting at 1. Remember to include the "." !!
-set(GANESHA_PATCH_LEVEL .2)
+set(GANESHA_PATCH_LEVEL .4)
 
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
@@ -85,6 +85,10 @@ if(${CMAKE_SYSTEM_NAME} MATCHES "Linux")
   elseif( ${SYS_RELEASE} MATCHES "openSUSE Leap" )
      message( STATUS "Detected a Linux openSUSE machine" )
      set(DISTRO "SLES")
+     set(LIBEXECDIR "/usr/lib")
+  elseif( ${SYS_RELEASE} MATCHES "Debian GNU/Linux" OR ${SYS_RELEASE} MATCHES "Ubuntu")
+     message( STATUS "Detected a Linux Debian base machine" )
+     set(DISTRO "DEBIAN")
      set(LIBEXECDIR "/usr/lib")
   else( ${SYS_RELEASE} MATCHES "Red Hat" )
      message( STATUS "Detected an UNKNOWN Linux machine" )
@@ -336,6 +340,12 @@ option(USE_LTTNG "Enable LTTng tracing" OFF)
 # Build man page.
 option(USE_MAN_PAGE "Build MAN page" OFF) 
 
+# Enable Rados KV store for recovery
+option(USE_RADOS_RECOV "Enable Rados KV Recovery" ON)
+
+# Enable RADOS URL config file sections
+option(RADOS_URLS "Enable config file inclusion from RADOS objects" OFF)
+
 #
 # End build options
 #
@@ -543,7 +553,7 @@ if(USE_FSAL_GLUSTER)
   IF(GLUSTER_PREFIX)
     set(ENV{PKG_CONFIG_PATH} "${PKG_CONFIG_PATH}:${GLUSTER_PREFIX}/lib/pkgconfig")
   ENDIF(GLUSTER_PREFIX)
-  pkg_check_modules(GFAPI glusterfs-api>=7.3.8.6)
+  pkg_check_modules(GFAPI glusterfs-api>=7.3.10.7)
   if(NOT GFAPI_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT PACKAGE: Cannot find GLUSTER GFAPI runtime. Disabling GLUSTER fsal build")
@@ -554,6 +564,7 @@ if(USE_FSAL_GLUSTER)
   else(NOT GFAPI_FOUND)
     message(STATUS "GFAPI_INCLUDE_DIRS=${GFAPI_INCLUDE_DIRS}")
     message(STATUS "GFAPI_LIBRARY_DIRS=${GFAPI_LIBRARY_DIRS}")
+    message(STATUS "GFAPI_LIBDIR=${GFAPI_LIBDIR}")
     include_directories(${GFAPI_INCLUDE_DIRS})
     # missing directory not provided by current version of GlusterFS
     include_directories(${GFAPI_PREFIX}/include)
@@ -578,6 +589,21 @@ if(USE_FSAL_GLUSTER)
 	set(USE_FSAL_GLUSTER OFF)
 	message(STATUS "Could not find libacl, disabling GLUSTER fsal build")
     endif(HAVE_ACL_H)
+    check_library_exists(gfapi glfs_xreaddirplus_r ${GFAPI_LIBDIR} HAVE_XREADDIRPLUS)
+    if(HAVE_XREADDIRPLUS)
+        set(USE_GLUSTER_XREADDIRPLUS ON)
+    else()
+        set(USE_GLUSTER_XREADDIRPLUS OFF)
+        message(STATUS "Could not find glfs_xreaddirplus, switching to glfs_readdir_r")
+    endif(HAVE_XREADDIRPLUS)
+    check_library_exists(gfapi glfs_fd_set_lkowner ${GFAPI_LIBDIR} HAVE_LKOWNER)
+    if(HAVE_LKOWNER)
+	set(USE_LKOWNER ON)
+    else()
+	set(USE_LKOWNER OFF)
+	set(USE_FSAL_GLUSTER OFF)
+	message(STATUS "lkowner support is needed to enable GLUSTER build")
+    endif(HAVE_LKOWNER)
   endif(USE_FSAL_GLUSTER)
 endif(USE_FSAL_GLUSTER)
 
@@ -595,7 +621,7 @@ endif(USE_FSAL_CEPH)
 
 if(USE_FSAL_RGW)
   # require RGW w/API version 1.1.x
-  find_package(RGW 1.1.3)
+  find_package(RGW 1.1.6)
   if(NOT RGW_FOUND)
     if(STRICT_PACKAGE)
       message(FATAL_ERROR "STRICT_PACKAGE : Cannot find RGW runtime.  Disabling RGW fsal build")
@@ -723,6 +749,19 @@ if(USE_LTTNG)
     set(USE_LTTNG OFF)
   endif(LTTNG_FOUND)
 endif(USE_LTTNG)
+
+if(USE_RADOS_RECOV OR RADOS_URLS)
+  find_package(RADOS)
+  if(NOT RADOS_FOUND)
+    if(STRICT_PACKAGE)
+      message(FATAL_ERROR "STRICT_PACKAGE : Rados libraries not found.")
+    else(STRICT_PACKAGE)
+      message(WARNING "Rados libraries not found.")
+      set(USE_RADOS_RECOV OFF)
+      set(RADOS_URLS OFF)
+    endif(STRICT_PACKAGE)
+  endif(NOT RADOS_FOUND)
+endif(USE_RADOS_RECOV OR RADOS_URLS)
 
 # Cmake 2.6 has issue in managing BISON and FLEX
 if( "${CMAKE_MAJOR_VERSION}.${CMAKE_MINOR_VERSION}" VERSION_LESS "2.8" )
@@ -1043,6 +1082,8 @@ message(STATUS "USE_BLKIN = ${USE_BLKIN}")
 message(STATUS "USE_VSOCK = ${USE_VSOCK}")
 message(STATUS "USE_TOOL_MULTILOCK = ${USE_TOOL_MULTILOCK}")
 message(STATUS "USE_MAN_PAGE = ${USE_MAN_PAGE}")
+message(STATUS "USE_RADOS_RECOV = ${USE_RADOS_RECOV}")
+message(STATUS "RADOS_URLS = ${RADOS_URLS}")
 
 #force command line options to be stored in cache
 set(USE_FSAL_VFS ${USE_FSAL_VFS}
@@ -1205,6 +1246,16 @@ set(_USE_NFS_RDMA ${USE_NFS_RDMA}
   "enable nfs RDMA in config"
   FORCE)
 
+set(USE_RADOS_RECOV ${USE_RADOS_RECOV}
+  CACHE BOOL
+  "enable rados recovery"
+  FORCE)
+
+set(RADOS_URLS ${RADOS_URLS}
+  CACHE BOOL
+  "enable rados url provider"
+  FORCE)
+
 # Now create a useable config.h
 configure_file(
   "${PROJECT_SOURCE_DIR}/include/config-h.in.cmake"
@@ -1317,6 +1368,18 @@ if (USE_MAN_PAGE)
 else(USE_MAN_PAGE)
   set(BCOND_MAN_PAGE "%bcond_with")
 endif(USE_MAN_PAGE)
+
+if(USE_RADOS_RECOV)
+    set(BCOND_RADOS_RECOV "%bcond_without")
+else(USE_RADOS_RECOV)
+    set(BCOND_RADOS_RECOV "%bcond_with")
+endif(USE_RADOS_RECOV)
+
+if(RADOS_URLS)
+    set(BCOND_RADOS_URLS "%bcond_without")
+else(RADOS_URLS)
+    set(BCOND_RADOS_URLS "%bcond_with")
+endif(RADOS_URLS)
 
 # Now create a useable specfile
 configure_file(

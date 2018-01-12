@@ -132,6 +132,15 @@ static void valgrind_kganesha(struct kxArgs *args)
 }
 #endif
 
+int gpfs_op2index(int op)
+{
+	if ((op < GPFS_MIN_OP) || (op > GPFS_MAX_OP) ||
+	    (op == 103 || op == 104 || op == 105))
+		return GPFS_STAT_PH_INDEX;
+	else
+		return (op - GPFS_MIN_OP);
+}
+
 /**
  *  @param op Operation
  *  @param *oarg Arguments
@@ -140,9 +149,12 @@ static void valgrind_kganesha(struct kxArgs *args)
 */
 int gpfs_ganesha(int op, void *oarg)
 {
-	int rc;
+	int rc, idx;
 	static int gpfs_fd = -2;
 	struct kxArgs args;
+	struct timespec start_time;
+	struct timespec stop_time;
+	nsecs_elapsed_t resp_time;
 
 	if (gpfs_fd < 0) {
 		/* If we enable fsal_trace in the config, the following
@@ -172,7 +184,21 @@ int gpfs_ganesha(int op, void *oarg)
 #ifdef _VALGRIND_MEMCHECK
 	valgrind_kganesha(&args);
 #endif
+	now(&start_time);
 	rc = ioctl(gpfs_fd, kGanesha, &args);
+	now(&stop_time);
+	resp_time = timespec_diff(&start_time, &stop_time);
+
+	/* record FSAL stats */
+	idx = gpfs_op2index(op);
+	(void)atomic_inc_uint64_t(&gpfs_stats.op_stats[idx].num_ops);
+	(void)atomic_add_uint64_t(&gpfs_stats.op_stats[idx].resp_time,
+				  resp_time);
+	if (gpfs_stats.op_stats[idx].resp_time_max < resp_time)
+		gpfs_stats.op_stats[idx].resp_time_max = resp_time;
+	if (gpfs_stats.op_stats[idx].resp_time_min == 0 ||
+	    gpfs_stats.op_stats[idx].resp_time_min > resp_time)
+		gpfs_stats.op_stats[idx].resp_time_min = resp_time;
 
 	return rc;
 }

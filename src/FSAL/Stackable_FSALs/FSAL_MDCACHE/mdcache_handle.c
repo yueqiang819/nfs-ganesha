@@ -630,9 +630,9 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 
 	if (mdcache_param.dir.avl_chunk > 0) {
 		/* Dirent chunking is enabled. */
-		LogDebug(COMPONENT_NFS_READDIR,
-			 "Calling mdcache_readdir_chunked whence=%"PRIx64,
-			 whence ? *whence : (uint64_t) 0);
+		LogDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
+			    "Calling mdcache_readdir_chunked whence=%"PRIx64,
+			    whence ? *whence : (uint64_t) 0);
 
 		return mdcache_readdir_chunked(directory,
 					       whence ? *whence : (uint64_t) 0,
@@ -647,7 +647,7 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 		PTHREAD_RWLOCK_unlock(&directory->content_lock);
 		if (FSAL_IS_ERROR(status)) {
 			if (status.major == ERR_FSAL_STALE) {
-				LogEvent(COMPONENT_NFS_READDIR,
+				LogEvent(COMPONENT_CACHE_INODE,
 					 "FSAL returned STALE from readdir.");
 				mdcache_kill_entry(directory);
 			} else if (status.major == ERR_FSAL_OVERFLOW) {
@@ -664,9 +664,10 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 								cb, attrmask,
 								eod_met);
 			}
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "mdcache_dirent_populate status=%s",
-				     fsal_err_txt(status));
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"mdcache_dirent_populate status=%s",
+					fsal_err_txt(status));
 			return status;
 		}
 	}
@@ -679,8 +680,9 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 		/* Not a full directory walk */
 		if (*whence < 3) {
 			/* mdcache always uses 1 and 2 for . and .. */
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "Bad cookie");
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"Bad cookie");
 			status = fsalstat(ERR_FSAL_BADCOOKIE, 0);
 			goto unlock_dir;
 		}
@@ -688,17 +690,19 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 					    MDCACHE_FLAG_NEXT_ACTIVE, &dirent);
 		switch (aerr) {
 		case MDCACHE_AVL_NOT_FOUND:
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "seek to cookie=%" PRIu64 " fail",
-				     *whence);
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"seek to cookie=%" PRIu64 " fail",
+					*whence);
 			status = fsalstat(ERR_FSAL_BADCOOKIE, 0);
 			goto unlock_dir;
 		case MDCACHE_AVL_LAST:
 		case MDCACHE_AVL_DELETED:
 			/* dirent was last, or all dirents after this one are
 			 * deleted */
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "EOD because empty result");
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"EOD because empty result");
 			*eod_met = true;
 			goto unlock_dir;
 		case MDCACHE_AVL_NO_ERROR:
@@ -711,10 +715,11 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 		dirent_node = avltree_first(&directory->fsobj.fsdir.avl.t);
 	}
 
-	LogFullDebug(COMPONENT_NFS_READDIR,
-		     "About to readdir in mdcache_readdir: directory=%p cookie=%"
-		     PRIu64 " collisions %d",
-		     directory, *whence, directory->fsobj.fsdir.avl.collisions);
+	LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
+			"About to readdir in mdcache_readdir: directory=%p cookie=%"
+			PRIu64 " collisions %d",
+			directory, *whence,
+			directory->fsobj.fsdir.avl.collisions);
 
 	/* Now satisfy the request from the cached readdir--stop when either
 	 * the requested sequence or dirent sequence is exhausted */
@@ -747,9 +752,10 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 				mdcache_kill_entry(directory);
 				return status;
 			}
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "lookup failed status=%s",
-				     fsal_err_txt(status));
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"lookup failed status=%s",
+					fsal_err_txt(status));
 			goto unlock_dir;
 		}
 
@@ -760,9 +766,10 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 		status = entry->obj_handle.obj_ops.getattrs(&entry->obj_handle,
 							    &attrs);
 		if (FSAL_IS_ERROR(status)) {
-			LogFullDebug(COMPONENT_NFS_READDIR,
-				     "getattrs failed status=%s",
-				     fsal_err_txt(status));
+			LogFullDebugAlt(COMPONENT_NFS_READDIR,
+					COMPONENT_CACHE_INODE,
+					"getattrs failed status=%s",
+					fsal_err_txt(status));
 			goto unlock_dir;
 		}
 
@@ -779,9 +786,9 @@ static fsal_status_t mdcache_readdir(struct fsal_obj_handle *dir_hdl,
 			break;
 	}
 
-	LogDebug(COMPONENT_NFS_READDIR,
-		 "dirent_node = %p, cb_result = %s",
-		 dirent_node, fsal_dir_result_str(cb_result));
+	LogDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
+		    "dirent_node = %p, cb_result = %s",
+		    dirent_node, fsal_dir_result_str(cb_result));
 
 	if (!dirent_node && cb_result < DIR_TERMINATE)
 		*eod_met = true;
@@ -1124,24 +1131,35 @@ fsal_status_t mdcache_refresh_attrs(mdcache_entry_t *entry, bool need_acl,
 
 	if (entry->attrs.acl != NULL) {
 		/* We used to have an ACL... */
-		if (need_acl) {
-			/* We requested update of an existing ACL, release the
-			 * old one.
+		if (attrs.acl != NULL) {
+			/* We got an ACL from the sub FSAL whether we asked for
+			 * it or not, given that we had an ACL before, and we
+			 * got a new one, update the ACL, so release the old
+			 * one.
 			 */
 			nfs4_acl_release_entry(entry->attrs.acl);
 		} else {
-			/* The ACL wasn't requested, move it into the
-			 * new attributes so we will retain it and make
-			 * it such that the entry attrs DO request the
-			 * ACL.
+			/* A new ACL wasn't provided, so move the old one
+			 * into the new attributes so it will be preserved
+			 * by the fsal_copy_attrs.
 			 */
 			attrs.acl = entry->attrs.acl;
 			attrs.valid_mask |= ATTR_ACL;
-			entry->attrs.request_mask |= ATTR_ACL;
 		}
+
+		/* NOTE: Because we already had an ACL,
+		 * entry->attrs.request_mask MUST have the ATTR_ACL bit set.
+		 * This will assure that fsal_copy_attrs below will copy the
+		 * selected ACL (old or new) into entry->attrs.
+		 */
 
 		/* ACL was released or moved to new attributes. */
 		entry->attrs.acl = NULL;
+	} else if (attrs.acl != NULL) {
+		/* We didn't have an ACL before, but we got a new one. We may
+		 * not have asked for it, but receive it anyway.
+		 */
+		entry->attrs.request_mask |= ATTR_ACL;
 	}
 
 	if (attrs.expire_time_attr == 0) {
@@ -1158,7 +1176,12 @@ fsal_status_t mdcache_refresh_attrs(mdcache_entry_t *entry, bool need_acl,
 	 */
 	fsal_release_attrs(&attrs);
 
-	mdc_fixup_md(entry, &attrs);
+	/* Note that we use &entry->attrs here in case attrs.request_mask was
+	 * modified by the FSAL. entry->attrs.request_mask reflects the
+	 * attributes we requested, and was updated to "request" ACL if the
+	 * FSAL provided one for us gratis.
+	 */
+	mdc_fixup_md(entry, &entry->attrs);
 
 	LogAttrlist(COMPONENT_CACHE_INODE, NIV_FULL_DEBUG,
 		    "attrs ", &entry->attrs, true);

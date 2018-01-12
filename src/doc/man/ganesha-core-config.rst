@@ -59,7 +59,7 @@ Drop_Delay_Errors(bool, default false)
     For NFSv3, whether to drop rather than reply to requests yielding delay
     errors.  False by default and settable with Drop_Delay_Errors.
 
-Dispatch_Max_Reqs(uint32, range 1 to 1024*128*16, default 5000)
+Dispatch_Max_Reqs(uint32, range 1 to 10000, default 5000)
     Total number of requests to allow into the dispatcher at once.
 
 Dispatch_Max_Reqs_Xprt(uint32, range 1 to 2048, default 512)
@@ -280,3 +280,20 @@ pnfs_mds(book, default false)
 
 pnfs_ds(book, default false)
     Whether this a pNFS DS server.
+
+RecoveryBackend(path, default "fs")
+    Use different backend for client info:
+    - fs : shared filesystem
+    - rados_kv : rados key-value
+
+RADOS_KV {}
+--------------------------------------------------------------------------------
+
+ceph_conf(string, no default)
+    Connection to ceph cluster, should be file path for ceph configuration.
+
+userid(path, no default)
+    User ID to ceph cluster.
+
+pool(string, no default)
+    Pool for client info.

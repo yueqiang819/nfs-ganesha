@@ -386,7 +386,9 @@ static int Bind_sockets_V6(void)
 			       sizeof(pdatap->sinaddr_udp6));
 			pdatap->sinaddr_udp6.sin6_family = AF_INET6;
 			/* all interfaces */
-			pdatap->sinaddr_udp6.sin6_addr = in6addr_any;
+			pdatap->sinaddr_udp6.sin6_addr =
+			    ((struct sockaddr_in6 *)
+			    &nfs_param.core_param.bind_addr)->sin6_addr;
 			pdatap->sinaddr_udp6.sin6_port =
 			    htons(nfs_param.core_param.port[p]);
 
@@ -420,7 +422,9 @@ static int Bind_sockets_V6(void)
 			       sizeof(pdatap->sinaddr_tcp6));
 			pdatap->sinaddr_tcp6.sin6_family = AF_INET6;
 			/* all interfaces */
-			pdatap->sinaddr_tcp6.sin6_addr = in6addr_any;
+			pdatap->sinaddr_tcp6.sin6_addr =
+			    ((struct sockaddr_in6 *)
+			    &nfs_param.core_param.bind_addr)->sin6_addr;
 			pdatap->sinaddr_tcp6.sin6_port =
 			    htons(nfs_param.core_param.port[p]);
 
@@ -474,7 +478,9 @@ static int Bind_sockets_V4(void)
 			       sizeof(pdatap->sinaddr_udp));
 			pdatap->sinaddr_udp.sin_family = AF_INET;
 			/* all interfaces */
-			pdatap->sinaddr_udp.sin_addr.s_addr = htonl(INADDR_ANY);
+			pdatap->sinaddr_udp.sin_addr.s_addr =
+			    ((struct sockaddr_in *)
+			    &nfs_param.core_param.bind_addr)->sin_addr.s_addr;
 			pdatap->sinaddr_udp.sin_port =
 			    htons(nfs_param.core_param.port[p]);
 
@@ -509,7 +515,9 @@ static int Bind_sockets_V4(void)
 			       sizeof(pdatap->sinaddr_tcp));
 			pdatap->sinaddr_tcp.sin_family = AF_INET;
 			/* all interfaces */
-			pdatap->sinaddr_tcp.sin_addr.s_addr = htonl(INADDR_ANY);
+			pdatap->sinaddr_udp.sin_addr.s_addr =
+			    ((struct sockaddr_in *)
+			    &nfs_param.core_param.bind_addr)->sin_addr.s_addr;
 			pdatap->sinaddr_tcp.sin_port =
 			    htons(nfs_param.core_param.port[p]);
 
@@ -889,7 +897,7 @@ void Register_program(protos prot, int flag, int vers)
 				 "Cannot register %s V%d on UDP", tags[prot],
 				 (int)vers);
 
-		if (netconfig_udpv6) {
+		if (!v6disabled && netconfig_udpv6) {
 			LogInfo(COMPONENT_DISPATCH, "Registering %s V%d/UDPv6",
 				tags[prot], (int)vers);
 			if (!UDP_REGISTER(prot, vers, netconfig_udpv6))
@@ -907,7 +915,7 @@ void Register_program(protos prot, int flag, int vers)
 				 "Cannot register %s V%d on TCP", tags[prot],
 				 (int)vers);
 
-		if (netconfig_tcpv6) {
+		if (!v6disabled && netconfig_tcpv6) {
 			LogInfo(COMPONENT_DISPATCH, "Registering %s V%d/TCPv6",
 				tags[prot], (int)vers);
 			if (!TCP_REGISTER(prot, vers, netconfig_tcpv6))
@@ -1126,16 +1134,6 @@ void nfs_rpc_dispatch_threads(pthread_attr_t *attr_thr)
 	LogInfo(COMPONENT_THREAD,
 		"%d rpc dispatcher threads were started successfully",
 		N_EVENT_CHAN);
-}
-
-void nfs_rpc_dispatch_stop(void)
-{
-	int ix;
-
-	for (ix = 0; ix < N_EVENT_CHAN; ++ix) {
-		svc_rqst_thrd_signal(rpc_evchan[ix].chan_id,
-				     SVC_RQST_SIGNAL_SHUTDOWN);
-	}
 }
 
 /**

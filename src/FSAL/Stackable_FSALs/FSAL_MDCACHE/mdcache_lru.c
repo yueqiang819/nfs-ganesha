@@ -874,12 +874,14 @@ struct dir_chunk *mdcache_get_chunk(mdcache_entry_t *parent)
 		 * The dirents list is effectively properly initialized.
 		 */
 		chunk = container_of(lru, struct dir_chunk, chunk_lru);
-		LogFullDebug(COMPONENT_CACHE_INODE_LRU,
+		LogFullDebug(COMPONENT_CACHE_INODE,
 			     "Recycling chunk at %p.", chunk);
 	} else {
 		/* alloc chunk (if fails, aborts) */
 		chunk = gsh_calloc(1, sizeof(struct dir_chunk));
 		glist_init(&chunk->dirents);
+		LogFullDebug(COMPONENT_CACHE_INODE,
+			     "New chunk %p.", chunk);
 		(void) atomic_inc_int64_t(&lru_state.chunks_used);
 	}
 
@@ -1068,29 +1070,6 @@ static inline size_t lru_run_lane(size_t lane, uint64_t *const totalclosed)
 		/* get entry early */
 		entry = container_of(lru, mdcache_entry_t, lru);
 
-		/* check refcnt in range */
-		if (unlikely(refcnt > 2)) {
-			/* This unref is ok to be done without a valid op_ctx
-			 * because we always map a new entry to an export before
-			 * we could possibly release references in
-			 * mdcache_new_entry.
-			 */
-			QUNLOCK(qlane);
-			mdcache_lru_unref(entry);
-			QLOCK(qlane);
-			/* but count it */
-			workdone++;
-			/* qlane LOCKED, lru refcnt is restored */
-			continue;
-		}
-
-		/* Move entry to MRU of L2 */
-		q = &qlane->L1;
-		LRU_DQ_SAFE(lru, q);
-		lru->qid = LRU_ENTRY_L2;
-		q = &qlane->L2;
-		lru_insert(lru, q, LRU_MRU);
-
 		/* Get a reference to the first export and build an op context
 		 * with it. By holding the QLANE lock while we get the export
 		 * reference we assure that the entry doesn't get detached from
@@ -1132,6 +1111,25 @@ static inline size_t lru_run_lane(size_t lane, uint64_t *const totalclosed)
 		init_root_op_context(&ctx, export, export->fsal_export, 0, 0,
 				     UNKNOWN_REQUEST);
 
+		/* check refcnt in range */
+		if (unlikely(refcnt > 2)) {
+			/* This unref is ok to be done without a valid op_ctx
+			 * because we always map a new entry to an export before
+			 * we could possibly release references in
+			 * mdcache_new_entry.
+			 */
+			QUNLOCK(qlane);
+			mdcache_lru_unref(entry);
+			goto next_lru;
+		}
+
+		/* Move entry to MRU of L2 */
+		q = &qlane->L1;
+		LRU_DQ_SAFE(lru, q);
+		lru->qid = LRU_ENTRY_L2;
+		q = &qlane->L2;
+		lru_insert(lru, q, LRU_MRU);
+
 		/* Drop the lane lock while performing (slow) operations on
 		 * entry */
 		QUNLOCK(qlane);
@@ -1164,10 +1162,11 @@ static inline size_t lru_run_lane(size_t lane, uint64_t *const totalclosed)
 
 		mdcache_lru_unref(entry);
 
+next_lru:
 		QLOCK(qlane); /* QLOCKED */
-
 		put_gsh_export(export);
 		op_ctx = saved_ctx;
+
 		++workdone;
 	} /* for_each_safe lru */
 
@@ -1946,6 +1945,8 @@ void lru_remove_chunk(struct dir_chunk *chunk)
 	struct lru_q_lane *qlane = &CHUNK_LRU[lane];
 	struct lru_q *lq;
 
+	LogFullDebug(COMPONENT_CACHE_INODE, "Removing chunk %p", chunk);
+
 	QLOCK(qlane);
 
 	/* Remove chunk and mark it as dead. */
@@ -1964,6 +1965,7 @@ void lru_remove_chunk(struct dir_chunk *chunk)
 	mdcache_clean_dirent_chunk(chunk);
 
 	/* And now we can free the chunk. */
+	LogFullDebug(COMPONENT_CACHE_INODE, "Freeing chunk %p", chunk);
 	gsh_free(chunk);
 }
 

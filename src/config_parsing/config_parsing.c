@@ -50,6 +50,7 @@ config_file_t config_ParseFile(char *file_path,
 	struct config_root *root;
 	int rc;
 
+	glist_init(&all_blocks);
 	memset(&st, 0, sizeof(struct parser_state));
 	st.err_type = err_type;
 	rc = ganeshun_yy_init_parser(file_path, &st);
@@ -68,6 +69,24 @@ config_file_t config_ParseFile(char *file_path,
 #endif
 	ganeshun_yy_cleanup_parser(&st);
 	return (config_file_t)root;
+}
+
+/**
+ *  Return the first node in the global config block list with
+ *  name == block_name
+ */
+void *config_GetBlockNode(const char *block_name)
+{
+	struct glist_head *glh;
+	struct config_node *node;
+
+	glist_for_each(glh, &all_blocks) {
+		node = glist_entry(glh, struct config_node, blocks);
+		if (!strcasecmp(node->u.nterm.name, block_name)) {
+			return node;
+		}
+	}
+	return NULL;
 }
 
 /**
@@ -568,12 +587,9 @@ static void convert_inet_addr(struct config_node *node,
 	struct addrinfo *res = NULL;
 	int rc;
 
-	if (node->u.term.type == TERM_V4ADDR ||
-	    node->u.term.type == TERM_V4_ANY)
-		hints.ai_family = AF_INET;
-	else if (node->u.term.type == TERM_V6ADDR)
-		hints.ai_family = AF_INET6;
-	else {
+	if (node->u.term.type != TERM_V4ADDR &&
+	    node->u.term.type != TERM_V4_ANY &&
+	    node->u.term.type != TERM_V6ADDR) {
 		config_proc_error(node, err_type,
 				  "Expected an IP address, got a %s",
 				  config_term_desc(node->u.term.type));
@@ -581,11 +597,22 @@ static void convert_inet_addr(struct config_node *node,
 		err_type->errors++;
 		return;
 	}
-	hints.ai_flags = AI_ADDRCONFIG;
+
+	/* Try IPv6 (with mapping) first.  If this fails, fall back on IPv4, if
+	 * a v4 address was given. */
+	hints.ai_family = AF_INET6;
+	hints.ai_flags = AI_ADDRCONFIG | AI_V4MAPPED;
 	hints.ai_socktype = 0;
 	hints.ai_protocol = 0;
 	rc = getaddrinfo(node->u.term.varvalue, NULL,
 			 &hints, &res);
+
+	if (rc != 0 && (node->u.term.type == TERM_V4ADDR ||
+			node->u.term.type == TERM_V4_ANY)) {
+		hints.ai_family = AF_INET;
+		rc = getaddrinfo(node->u.term.varvalue, NULL,
+				 &hints, &res);
+	}
 	if (rc == 0) {
 		memcpy(sock, res->ai_addr, res->ai_addrlen);
 	} else {
@@ -749,6 +776,8 @@ static bool do_block_init(struct config_node *blk_node,
 	struct config_item *item;
 	void *param_addr;
 	sockaddr_t *sock;
+	struct addrinfo hints;
+	struct addrinfo *res = NULL;
 	int rc;
 	int errors = 0;
 
@@ -831,27 +860,22 @@ static bool do_block_init(struct config_node *blk_node,
 			sock = (sockaddr_t *)param_addr;
 			memset(sock, 0, sizeof(sockaddr_t));
 			errno = 0;
-			if (index(item->u.ip.def, ':') != NULL) {
-				sock->ss_family = AF_INET6;
-				rc = inet_pton(AF_INET6,
-					       item->u.ip.def,
-					       &((struct sockaddr_in6 *)sock)
-					       ->sin6_addr);
-			} else if (index(item->u.ip.def, '.') != NULL) {
-				sock->ss_family = AF_INET;
-				rc = inet_pton(AF_INET,
-					       item->u.ip.def,
-					       &((struct sockaddr_in *)sock)
-					       ->sin_addr);
-			} else {
-				config_proc_error(blk_node, err_type,
-						  "Bad default for %s: %s",
-						  item->name,
-						  item->u.ip.def);
-				errors++;
-				break;
+			/* Try IPv6 (with mapping) first.  If this fails, fall
+			 * back on IPv4, if a v4 address was given. */
+			hints.ai_family = AF_INET6;
+			hints.ai_flags = AI_ADDRCONFIG | AI_V4MAPPED;
+			hints.ai_socktype = 0;
+			hints.ai_protocol = 0;
+			rc = getaddrinfo(item->u.ip.def, NULL, &hints, &res);
+
+			if (rc != 0) {
+				hints.ai_family = AF_INET;
+				rc = getaddrinfo(item->u.ip.def, NULL, &hints,
+						 &res);
 			}
-			if (rc <= 0) {
+			if (rc == 0) {
+				memcpy(sock, res->ai_addr, res->ai_addrlen);
+			} else {
 				config_proc_error(blk_node, err_type,
 						  "Cannot set IP default for %s to %s because %s",
 						  item->name,
@@ -859,6 +883,8 @@ static bool do_block_init(struct config_node *blk_node,
 						  strerror(errno));
 				errors++;
 			}
+			if (res != NULL)
+				freeaddrinfo(res);
 			break;
 		case CONFIG_BLOCK:
 			(void) item->u.blk.init(NULL, param_addr);
@@ -1945,4 +1971,3 @@ int load_config_from_parse(config_file_t config,
 	}
 	return found;
 }
-

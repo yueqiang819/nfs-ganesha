@@ -198,7 +198,7 @@ typedef struct nfs_core_param {
 	uint16_t port[P_COUNT];
 	/** The address to which to bind for our listening port.
 	    IPv4 only, for now.  Set by the Bind_Addr option. */
-	struct sockaddr_in bind_addr;
+	struct sockaddr_storage bind_addr;
 	/** An array of RPC program numbers.  The correct values, by
 	    default, they may be set to incorrect values with the
 	    NFS_Program, MNT_Program, NLM_Program, and
@@ -430,6 +430,11 @@ typedef struct nfs_core_param {
  */
 #define DELEG_RECALL_RETRY_DELAY_DEFAULT 1
 
+/**
+ * @brief Default value of recovery_backend.
+ */
+#define RECOVERY_BACKEND_DEFAULT "fs"
+
 typedef struct nfs_version4_parameter {
 	/** Whether to disable the NFSv4 grace period.  Defaults to
 	    false and settable with Graceless. */
@@ -470,6 +475,8 @@ typedef struct nfs_version4_parameter {
 	bool pnfs_mds;
 	/** Whether this a pNFS DS server. Defaults to false */
 	bool pnfs_ds;
+	/** Recovery backend */
+	char *recovery_backend;
 } nfs_version4_parameter_t;
 
 /** @} */

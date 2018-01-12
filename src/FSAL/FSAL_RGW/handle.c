@@ -185,7 +185,10 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 	int rc;
 	fsal_status_t fsal_status = {ERR_FSAL_NO_ERROR, 0};
 	struct rgw_cb_arg rgw_cb_arg = {cb, cb_arg, dir_hdl, attrmask};
-	uint64_t r_whence = (whence) ? *whence : 0;
+
+	/* when whence_is_name, whence is a char pointer cast to
+	 * fsal_cookie_t */
+	const char *r_whence = (const char *) whence;
 
 	struct rgw_export *export =
 		container_of(op_ctx->fsal_export, struct rgw_export, export);
@@ -198,8 +201,8 @@ static fsal_status_t rgw_fsal_readdir(struct fsal_obj_handle *dir_hdl,
 
 	rc = 0;
 	*eof = false;
-	rc = rgw_readdir(export->rgw_fs, dir->rgw_fh, &r_whence, rgw_cb,
-			&rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
+	rc = rgw_readdir2(export->rgw_fs, dir->rgw_fh, r_whence, rgw_cb,
+			  &rgw_cb_arg, eof, RGW_READDIR_FLAG_NONE);
 	if (rc < 0)
 		return rgw2fsal_error(rc);
 
@@ -1285,7 +1288,7 @@ fsal_status_t rgw_fsal_reopen2(struct fsal_obj_handle *obj_hdl,
 	PTHREAD_RWLOCK_unlock(&obj_hdl->obj_lock);
 
 	/* perform a provider open iff not already open */
-	if (!fsal_is_open(obj_hdl)) {
+	if (true) {
 
 		/* XXX also, how do we know the ULP tracks opens?
 		 * 9P does, V3 does not */
@@ -1425,7 +1428,7 @@ fsal_status_t rgw_fsal_write2(struct fsal_obj_handle *obj_hdl,
 
 	int rc = rgw_write(export->rgw_fs, handle->rgw_fh, offset,
 			buffer_size, wrote_amount, buffer,
-			RGW_WRITE_FLAG_NONE);
+			(!state) ? RGW_OPEN_FLAG_V3 : RGW_OPEN_FLAG_NONE);
 
 	LogFullDebug(COMPONENT_FSAL,
 		"%s post obj_hdl %p state %p returned %d", __func__, obj_hdl,

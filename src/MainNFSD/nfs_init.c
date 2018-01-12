@@ -98,7 +98,6 @@ nfs_start_info_t nfs_start_info;
 
 pthread_t admin_thrid;
 pthread_t sigmgr_thrid;
-pthread_t gsh_dbus_thrid;
 
 #ifdef _USE_9P
 pthread_t _9p_dispatcher_thrid;
@@ -130,12 +129,13 @@ char *pidfile_path = GANESHA_PIDFILE_PATH;
  *
  */
 
+struct config_error_type err_type;
+
 void reread_config(void)
 {
 	int status = 0;
 	int i;
 	config_file_t config_struct;
-	struct config_error_type err_type;
 
 	/* Clear out the flag indicating component was set from environment. */
 	for (i = COMPONENT_ALL; i < COMPONENT_COUNT; i++)
@@ -444,6 +444,11 @@ int nfs_set_param_from_conf(config_file_t parse_tree,
 
 	if (mdcache_set_param_from_conf(parse_tree, err_type) < 0)
 		return -1;
+
+#ifdef USE_RADOS_RECOV
+	if (rados_kv_set_param_from_conf(parse_tree, err_type) < 0)
+		return -1;
+#endif
 
 	LogEvent(COMPONENT_INIT, "Configuration file successfully parsed");
 
@@ -820,10 +825,10 @@ static void nfs_Init(const nfs_start_info_t *p_start_info)
 	/* Create stable storage directory, this needs to be done before
 	 * starting the recovery thread.
 	 */
-	nfs4_create_recov_dir();
+	nfs4_recovery_init();
 
 	/* read in the client IDs */
-	nfs4_load_recov_clids(NULL);
+	nfs4_recovery_load_clids(NULL);
 
 	/* Start grace period */
 	nfs4_start_grace(NULL);
@@ -971,7 +976,7 @@ void nfs_start(nfs_start_info_t *p_start_info)
 
 	/* if not in grace period, clean up the old state directory */
 	if (!nfs_in_grace())
-		nfs4_clean_old_recov_dir(v4_old_dir);
+		nfs4_recovery_cleanup();
 
 	Cleanup();
 

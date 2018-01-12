@@ -139,7 +139,7 @@ static fsal_status_t lookup_path(struct fsal_export *export_pub,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -245,7 +245,7 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
 	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
 			       GLAPI_UUID_LENGTH);
 	if (rc < 0) {
-		status = gluster2fsal_error(rc);
+		status = gluster2fsal_error(errno);
 		goto out;
 	}
 
@@ -260,6 +260,63 @@ static fsal_status_t create_handle(struct fsal_export *export_pub,
  out:
 	if (status.major != ERR_FSAL_NO_ERROR)
 		gluster_cleanup_vars(glhandle);
+#ifdef GLTIMING
+	now(&e_time);
+	latency_update(&s_time, &e_time, lat_create_handle);
+#endif
+	return status;
+}
+
+/**
+ * @brief Given a glfs_object handle, construct handle for
+ * FSAL to use.
+ */
+
+fsal_status_t glfs2fsal_handle(struct glusterfs_export *glfs_export,
+			       struct glfs_object *glhandle,
+			       struct fsal_obj_handle **pub_handle,
+			       struct stat *sb,
+			       struct attrlist *attrs_out)
+{
+	int rc = 0;
+	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
+	unsigned char globjhdl[GFAPI_HANDLE_LENGTH] = {'\0'};
+	struct glusterfs_handle *objhandle = NULL;
+	char vol_uuid[GLAPI_UUID_LENGTH] = {'\0'};
+#ifdef GLTIMING
+	struct timespec s_time, e_time;
+
+	now(&s_time);
+#endif
+
+	*pub_handle = NULL;
+
+	if (!glfs_export || !glhandle) {
+		status.major = ERR_FSAL_INVAL;
+		goto out;
+	}
+
+	rc = glfs_h_extract_handle(glhandle, globjhdl, GFAPI_HANDLE_LENGTH);
+	if (rc < 0) {
+		status = gluster2fsal_error(errno);
+		goto out;
+	}
+	rc = glfs_get_volumeid(glfs_export->gl_fs->fs, vol_uuid,
+				 GLAPI_UUID_LENGTH);
+	if (rc < 0) {
+		status = gluster2fsal_error(errno);
+		goto out;
+	}
+
+	construct_handle(glfs_export, sb, glhandle, globjhdl,
+			 GLAPI_HANDLE_LENGTH, &objhandle, vol_uuid);
+
+	if (attrs_out != NULL) {
+		posix2fsal_attributes_all(sb, attrs_out);
+	}
+
+	*pub_handle = &objhandle->handle;
+ out:
 #ifdef GLTIMING
 	now(&e_time);
 	latency_update(&s_time, &e_time, lat_create_handle);
@@ -284,7 +341,7 @@ static fsal_status_t get_dynamic_info(struct fsal_export *exp_hdl,
 	rc = glfs_statvfs(glfs_export->gl_fs->fs, glfs_export->export_path,
 			  &vfssb);
 	if (rc != 0)
-		return gluster2fsal_error(rc);
+		return gluster2fsal_error(errno);
 
 	memset(infop, 0, sizeof(fsal_dynamicfsinfo_t));
 	infop->total_bytes = vfssb.f_frsize * vfssb.f_blocks;
@@ -305,8 +362,8 @@ static fsal_status_t get_dynamic_info(struct fsal_export *exp_hdl,
  * Note that this is not expected to fail since memory allocation is
  * expected to abort on failure.
  *
- * @param[in] exp_hdl               Export state_t will be associated with
- * @param[in] state_type            Type of state to allocate
+ * @param[in] exp_hdl	       Export state_t will be associated with
+ * @param[in] state_type	    Type of state to allocate
  * @param[in] related_state         Related state if appropriate
  *
  * @returns a state structure.
@@ -629,6 +686,9 @@ glusterfs_free_fs(struct glusterfs_fs *gl_fs)
 
 	atomic_inc_int8_t(&gl_fs->destroy_mode);
 
+	/* Cancel upcall readiness if not yet done */
+	up_ready_cancel((struct fsal_up_vector *)gl_fs->up_ops);
+
 	/* Wait for up_thread to exit */
 	err = pthread_join(gl_fs->up_thread, (void **)&retval);
 
@@ -759,6 +819,7 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 	int rc = 0;
 	fsal_status_t status = { ERR_FSAL_NO_ERROR, 0 };
 	struct glusterfs_export *glfsexport = NULL;
+	bool fsal_attached = false;
 	struct glexport_params params = {
 		.glvolname = NULL,
 		.glhostname = NULL,
@@ -801,6 +862,7 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 			op_ctx->ctx_export->fullpath);
 		goto out;
 	}
+	fsal_attached = true;
 
 	glfsexport->mount_path = op_ctx->ctx_export->fullpath;
 	glfsexport->export_path = params.glvolpath;
@@ -864,6 +926,11 @@ fsal_status_t glusterfs_create_export(struct fsal_module *fsal_hdl,
 		if (params.glvolpath)
 			gsh_free(params.glvolpath);
 
+		if (fsal_attached)
+			fsal_detach_export(fsal_hdl,
+					   &glfsexport->export.exports);
+		if (glfsexport->gl_fs)
+			glusterfs_free_fs(glfsexport->gl_fs);
 		if (glfsexport)
 			gsh_free(glfsexport);
 	}
