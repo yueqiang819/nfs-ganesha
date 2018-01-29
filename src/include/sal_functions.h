@@ -64,6 +64,7 @@ const char *state_owner_type_to_str(state_owner_type_t type);
 bool different_owners(state_owner_t *owner1, state_owner_t *owner2);
 int display_owner(struct display_buffer *dspbuf, state_owner_t *owner);
 void inc_state_owner_ref(state_owner_t *owner);
+bool hold_state_owner(state_owner_t *owner);
 void dec_state_owner_ref(state_owner_t *owner);
 void free_state_owner(state_owner_t *owner);
 
@@ -447,7 +448,7 @@ static inline void dec_state_t_ref(struct state_t *state)
 		dec_nfs4_state_ref(state);
 }
 
-int nfs4_State_Set(state_t *state_data);
+state_status_t nfs4_State_Set(state_t *state_data);
 struct state_t *nfs4_State_Get_Pointer(char *other);
 bool nfs4_State_Del(state_t *state);
 void nfs_State_PrintAll(void);

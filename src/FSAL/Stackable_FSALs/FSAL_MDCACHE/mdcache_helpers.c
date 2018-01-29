@@ -226,7 +226,9 @@ static mdcache_entry_t *mdcache_alloc_handle(
 			 PRIi16" that is in the process of being unexported",
 			 result, op_ctx->ctx_export->export_id);
 		mdcache_put(result);
-		mdcache_kill_entry(result);
+		/* Handle is not yet in hash / LRU, so just put the sentinal
+		 * ref */
+		mdcache_put(result);
 		return NULL;
 	}
 
@@ -383,6 +385,7 @@ again:
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+/* entry's content_lock must be held in exclusive mode */
 fsal_status_t
 mdc_get_parent_handle(struct mdcache_fsal_export *export,
 		      mdcache_entry_t *entry,
@@ -391,6 +394,10 @@ mdc_get_parent_handle(struct mdcache_fsal_export *export,
 	char buf[NFS4_FHSIZE];
 	struct gsh_buffdesc fh_desc = { buf, NFS4_FHSIZE };
 	fsal_status_t status;
+
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer != 0);
+#endif
 
 	/* Get a wire handle that can be used with create_handle() */
 	subcall_raw(export,
@@ -406,11 +413,16 @@ mdc_get_parent_handle(struct mdcache_fsal_export *export,
 	return fsalstat(ERR_FSAL_NO_ERROR, 0);
 }
 
+/* entry's content_lock must be held in exclusive mode */
 void
 mdc_get_parent(struct mdcache_fsal_export *export, mdcache_entry_t *entry)
 {
 	struct fsal_obj_handle *sub_handle;
 	fsal_status_t status;
+
+#ifdef DEBUG_MDCACHE
+	assert(entry->content_lock.__data.__writer != 0);
+#endif
 
 	if (entry->obj_handle.type != DIRECTORY) {
 		/* Parent pointer only for directories */
@@ -783,10 +795,11 @@ mdcache_new_entry(struct mdcache_fsal_export *export,
 
 	/* We raced or failed, release the new entry we acquired, this will
 	 * result in inline deconstruction. This will release the attributes, we
-	 * may not have copied yet, in which case mask and acl are 0/NULL.
+	 * may not have copied yet, in which case mask and acl are 0/NULL.  This
+	 * entry is not yet in the hash or LRU, so just put it's sentinal ref.
 	 */
 	mdcache_put(nentry);
-	mdcache_kill_entry(nentry);
+	mdcache_put(nentry);
 
  out_no_new_entry_yet:
 
@@ -1096,7 +1109,9 @@ fsal_status_t mdc_add_cache(mdcache_entry_t *mdc_parent,
 
 	if (!FSAL_IS_ERROR(status) && new_entry->obj_handle.type == DIRECTORY) {
 		/* Insert Parent's key */
+		PTHREAD_RWLOCK_wrlock(&new_entry->content_lock);
 		mdc_dir_add_parent(new_entry, mdc_parent);
+		PTHREAD_RWLOCK_unlock(&new_entry->content_lock);
 	}
 
 	mdcache_put(new_entry);
@@ -1213,16 +1228,37 @@ fsal_status_t mdc_lookup(mdcache_entry_t *mdc_parent, const char *name,
 
 	PTHREAD_RWLOCK_rdlock(&mdc_parent->content_lock);
 
+	/* ".." doesn't end up in the cache */
 	if (!strcmp(name, "..")) {
 		struct mdcache_fsal_export *export = mdc_cur_export();
+		struct gsh_buffdesc tmpfh;
 
 		LogFullDebug(COMPONENT_CACHE_INODE,
 			     "Lookup parent (..) of %p", mdc_parent);
-		/* ".." doesn't end up in the cache */
-		status =  mdcache_locate_host(
-				&mdc_parent->fsobj.fsdir.parent,
-				export, new_entry, attrs_out);
-		goto out;
+
+		if (mdc_parent->fsobj.fsdir.parent.len == 0) {
+			/* we need write lock */
+			PTHREAD_RWLOCK_unlock(&mdc_parent->content_lock);
+			PTHREAD_RWLOCK_wrlock(&mdc_parent->content_lock);
+			mdc_get_parent(export, mdc_parent);
+		}
+
+		/* We need to drop the content lock around the locate, as that
+		 * will try to take the attribute lock on the parent to refresh
+		 * it's attributes, which can cause an ABBA with lookup/readdir.
+		 * Copy the parent filehandle, so we can drop the lock.
+		 */
+		mdcache_copy_fh(&tmpfh, &mdc_parent->fsobj.fsdir.parent);
+		PTHREAD_RWLOCK_unlock(&mdc_parent->content_lock);
+
+		status =  mdcache_locate_host(&tmpfh, export, new_entry,
+					      attrs_out);
+
+		mdcache_free_fh(&tmpfh);
+
+		if (status.major == ERR_FSAL_STALE)
+			status.major = ERR_FSAL_NOENT;
+		return status;
 	}
 
 	if (test_mde_flags(mdc_parent, MDCACHE_BYPASS_DIRCACHE)) {
@@ -2367,9 +2403,22 @@ mdc_readdir_chunk_object(const char *name, struct fsal_obj_handle *sub_handle,
 		 * treat a hash collision (which per current code we should
 		 * never actually see) the same.
 		 */
+		mdcache_put(new_entry);
+		/* Check for return code of -4. This indicates that its FSAL
+		 * cookie duplication / collision. This could happen due to
+		 * fast mutating directory. The already cached contents are
+		 * stale/invalid. Need to invalidate the cache and inform
+		 * client to re-read the directory.
+		 */
+		if (code == -4) {
+			atomic_clear_uint32_t_bits(&state->dir->mde_flags,
+						   MDCACHE_TRUST_CONTENT);
+			state->status->major = ERR_FSAL_DELAY;
+			state->status->minor = 0;
+			return DIR_TERMINATE;
+		}
 		LogCrit(COMPONENT_CACHE_INODE,
 			"Collision while adding dirent for %s", name);
-		mdcache_put(new_entry);
 		return DIR_CONTINUE;
 	}
 
@@ -2488,7 +2537,9 @@ mdc_readdir_chunk_object(const char *name, struct fsal_obj_handle *sub_handle,
 
 	if (new_entry->obj_handle.type == DIRECTORY) {
 		/* Insert Parent's key */
+		PTHREAD_RWLOCK_wrlock(&new_entry->content_lock);
 		mdc_dir_add_parent(new_entry, mdc_parent);
+		PTHREAD_RWLOCK_unlock(&new_entry->content_lock);
 	}
 
 	LogFullDebugAlt(COMPONENT_NFS_READDIR, COMPONENT_CACHE_INODE,
@@ -3457,6 +3508,68 @@ _mdcache_kill_entry(mdcache_entry_t *entry,
 		mdcache_lru_cleanup_push(entry);
 	}
 
+}
+
+/**
+ * @brief Update the cached attributes
+ *
+ * Update the cached attributes on @a entry with the attributes in @a attrs
+ *
+ * @note The caller must hold the attribute lock for WRITE
+ *
+ * @param[in] entry	Entry to update
+ * @param[in] attrs	New attributes to cache
+ * @return FSAL status
+ */
+void mdc_update_attr_cache(mdcache_entry_t *entry, struct attrlist *attrs)
+{
+	if (entry->attrs.acl != NULL) {
+		/* We used to have an ACL... */
+		if (attrs->acl != NULL) {
+			/* We got an ACL from the sub FSAL whether we asked for
+			 * it or not, given that we had an ACL before, and we
+			 * got a new one, update the ACL, so release the old
+			 * one.
+			 */
+			nfs4_acl_release_entry(entry->attrs.acl);
+		} else {
+			/* A new ACL wasn't provided, so move the old one
+			 * into the new attributes so it will be preserved
+			 * by the fsal_copy_attrs.
+			 */
+			attrs->acl = entry->attrs.acl;
+			attrs->valid_mask |= ATTR_ACL;
+		}
+
+		/* NOTE: Because we already had an ACL,
+		 * entry->attrs.request_mask MUST have the ATTR_ACL bit set.
+		 * This will assure that fsal_copy_attrs below will copy the
+		 * selected ACL (old or new) into entry->attrs.
+		 */
+
+		/* ACL was released or moved to new attributes. */
+		entry->attrs.acl = NULL;
+	} else if (attrs->acl != NULL) {
+		/* We didn't have an ACL before, but we got a new one. We may
+		 * not have asked for it, but receive it anyway.
+		 */
+		entry->attrs.request_mask |= ATTR_ACL;
+	}
+
+	if (attrs->expire_time_attr == 0) {
+		/* FSAL did not set this, retain what was in the entry. */
+		attrs->expire_time_attr = entry->attrs.expire_time_attr;
+	}
+
+	/* Now move the new attributes into the entry. */
+	fsal_copy_attrs(&entry->attrs, attrs, true);
+
+	/* Note that we use &entry->attrs here in case attrs.request_mask was
+	 * modified by the FSAL. entry->attrs.request_mask reflects the
+	 * attributes we requested, and was updated to "request" ACL if the
+	 * FSAL provided one for us gratis.
+	 */
+	mdc_fixup_md(entry, &entry->attrs);
 }
 
 /** @} */
