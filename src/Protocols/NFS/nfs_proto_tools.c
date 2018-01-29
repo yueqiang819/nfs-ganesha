@@ -1669,11 +1669,11 @@ static fattr_xdr_result decode_owner(XDR *xdr, struct xdr_attrs_args *args)
 		newpos += (4 - (len % 4));
 
 	ownerdesc.len = len;
-	ownerdesc.addr = xdr_inline(xdr, len);
+	ownerdesc.addr = xdr_inline_decode(xdr, len);
 
 	if (!ownerdesc.addr) {
 		LogMajor(COMPONENT_NFS_V4,
-			 "xdr_inline on xdrmem stream failed!");
+			 "xdr_inline_decode on xdrmem stream failed!");
 		return FATTR_XDR_FAILED;
 	}
 
@@ -1718,11 +1718,11 @@ static fattr_xdr_result decode_group(XDR *xdr, struct xdr_attrs_args *args)
 		newpos += (4 - (len % 4));
 
 	groupdesc.len = len;
-	groupdesc.addr = xdr_inline(xdr, len);
+	groupdesc.addr = xdr_inline_decode(xdr, len);
 
 	if (!groupdesc.addr) {
 		LogMajor(COMPONENT_NFS_V4,
-			 "xdr_inline on xdrmem stream failed!");
+			 "xdr_inline_decode on xdrmem stream failed!");
 		return FATTR_XDR_FAILED;
 	}
 
@@ -3924,6 +3924,10 @@ bool nfs3_FSALattr_To_Fattr(struct fsal_obj_handle *obj,
 	/* We want to override the FSAL fsid with the export's configured fsid
 	 */
 	attrmask_t want = ATTRS_NFS3;
+
+	/* If an error occurred when getting object attributes, return false */
+	if (FSAL_attr->valid_mask == ATTR_RDATTR_ERR)
+		return false;
 
 	if ((want & FSAL_attr->valid_mask) != want) {
 		LogCrit(COMPONENT_NFSPROTO,

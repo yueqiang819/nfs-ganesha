@@ -540,6 +540,7 @@ static int pxy_connect(struct pxy_client_params *info,
 	default:
 		LogCrit(COMPONENT_FSAL, "Unknown address family %d",
 			dest->ss_family);
+		return -1;
 	}
 
 	if (sock >= 0) {
@@ -766,14 +767,20 @@ static int pxy_compoundv4_call(struct pxy_rpc_io_context *pcontext,
 	rmsg.cb_proc = NFSPROC4_COMPOUND;
 
 	if (cred) {
-		au = authunix_create(pxy_hostname, cred->caller_uid,
-				     cred->caller_gid, cred->caller_glen,
-				     cred->caller_garray);
+		au = authunix_ncreate(pxy_hostname, cred->caller_uid,
+				      cred->caller_gid, cred->caller_glen,
+				      cred->caller_garray);
 	} else {
-		au = authunix_create_default();
+		au = authunix_ncreate_default();
 	}
-	if (au == NULL)
+	if (AUTH_FAILURE(au)) {
+		char *err = rpc_sperror(&au->ah_error, "failed");
+
+		LogDebug(COMPONENT_FSAL, "%s", err);
+		gsh_free(err);
+		AUTH_DESTROY(au);
 		return RPC_AUTHERROR;
+	}
 
 	rmsg.cb_cred = au->ah_cred;
 	rmsg.cb_verf = au->ah_verf;

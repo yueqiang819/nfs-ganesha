@@ -50,7 +50,6 @@
 #include "gsh_intrinsic.h"
 #include "gsh_wait_queue.h"
 
-#define DUPREQ_BAD_ADDR1 0x01	/* safe for marked pointers, etc */
 #define DUPREQ_NOCACHE   0x02
 #define DUPREQ_MAX_RETRIES 5
 
@@ -478,7 +477,10 @@ static inline void drc_free_expired(void)
 		drc = TAILQ_FIRST(&drc_st->tcp_drc_recycle_q);
 		if (drc && (drc->d_u.tcp.recycle_time > 0)
 		    && ((now - drc->d_u.tcp.recycle_time) >
-			drc_st->expire_delta) && (drc->refcnt == 0)) {
+			drc_st->expire_delta)) {
+
+			assert(drc->refcnt == 0);
+
 			LogFullDebug(COMPONENT_DUPREQ,
 				     "remove expired drc %p from recycle queue",
 				     drc);
@@ -497,16 +499,8 @@ static inline void drc_free_expired(void)
 			TAILQ_REMOVE(&drc_st->tcp_drc_recycle_q, drc,
 				     d_u.tcp.recycle_q);
 			--(drc_st->tcp_drc_recycle_qlen);
-			/* expect DRC to be reachable from some xprt(s) */
-			PTHREAD_MUTEX_lock(&drc->mtx);
-			drc->flags &= ~DRC_FLAG_RECYCLE;
-			/* but if not, dispose it */
-			if (drc->refcnt == 0) {
-				PTHREAD_MUTEX_unlock(&drc->mtx);
-				free_tcp_drc(drc);
-				continue;
-			}
-			PTHREAD_MUTEX_unlock(&drc->mtx);
+
+			free_tcp_drc(drc);
 		} else {
 			LogFullDebug(COMPONENT_DUPREQ,
 				     "unexpired drc %p in recycle queue expire check (nothing happens)",
@@ -585,6 +579,14 @@ retry:
 			t = rbtx_partition_of_scalar(&drc_st->tcp_drc_recycle_t,
 						     drc_k.d_u.tcp.hk);
 			DRC_ST_LOCK();
+
+			/* Avoid double reference of drc,
+			 * rechecking xp_u2 after DRC_ST_LOCK */
+			if (req->rq_xprt->xp_u2) {
+				DRC_ST_UNLOCK();
+				goto retry;
+			}
+
 			ndrc =
 			    opr_rbtree_lookup(&t->t, &drc_k.d_u.tcp.recycle_k);
 			if (ndrc) {
@@ -626,16 +628,18 @@ retry:
 				/* assign already-computed hash */
 				drc->d_u.tcp.hk = drc_k.d_u.tcp.hk;
 				PTHREAD_MUTEX_lock(&drc->mtx);	/* LOCKED */
-				/* xprt ref */
-				drc->refcnt = 1;
 				/* insert dict */
 				opr_rbtree_insert(&t->t,
 						  &drc->d_u.tcp.recycle_k);
 			}
+
+			/* Avoid double reference of drc,
+			 * setting xp_u2 under DRC_ST_LOCK */
+			req->rq_xprt->xp_u2 = (void *)drc;
+			(void)nfs_dupreq_ref_drc(drc);  /* xprt ref */
+
 			DRC_ST_UNLOCK();
 			drc->d_u.tcp.recycle_time = 0;
-
-			(void)nfs_dupreq_ref_drc(drc);	/* xprt ref */
 
 			/* try to expire unused DRCs somewhat in proportion to
 			 * new connection arrivals */
@@ -644,13 +648,6 @@ retry:
 			LogFullDebug(COMPONENT_DUPREQ,
 				     "after ref drc %p refcnt==%u ", drc,
 				     drc->refcnt);
-
-			/* Idempotent address, no need for lock;
-			 * set once here, never changes.
-			 * No other fields are modified.
-			 * Assumes address stores are atomic.
-			 */
-			req->rq_xprt->xp_u2 = (void *)drc;
 		}
 		break;
 	default:
@@ -675,11 +672,10 @@ out:
  * Release previously-ref'd DRC.  If its refcnt drops to 0, the DRC
  * is queued for later recycling.
  *
- * @param[in] xprt  The SVCXPRT associated with DRC, if applicable
  * @param[in] drc   The DRC
  * @param[in] flags Control flags
  */
-void nfs_dupreq_put_drc(SVCXPRT *xprt, drc_t *drc, uint32_t flags)
+void nfs_dupreq_put_drc(drc_t *drc, uint32_t flags)
 {
 	if (!(flags & DRC_FLAG_LOCKED))
 		PTHREAD_MUTEX_lock(&drc->mtx);
@@ -1028,7 +1024,7 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 	case DRC_UDP_V234:
 		dk->hin.tcp.rq_xid = req->rq_msg.rm_xid;
 		if (unlikely(!copy_xprt_addr(&dk->hin.addr, req->rq_xprt))) {
-			nfs_dupreq_put_drc(req->rq_xprt, drc, DRC_FLAG_NONE);
+			nfs_dupreq_put_drc(drc, DRC_FLAG_NONE);
 			nfs_dupreq_free_dupreq(dk);
 			return DUPREQ_INSERT_MALLOC_ERROR;
 		}
@@ -1038,7 +1034,7 @@ dupreq_status_t nfs_dupreq_start(nfs_request_t *reqnfs,
 		break;
 	default:
 		/* @todo: should this be an assert? */
-		nfs_dupreq_put_drc(req->rq_xprt, drc, DRC_FLAG_NONE);
+		nfs_dupreq_put_drc(drc, DRC_FLAG_NONE);
 		nfs_dupreq_free_dupreq(dk);
 		return DUPREQ_INSERT_MALLOC_ERROR;
 	}
@@ -1159,10 +1155,6 @@ dupreq_status_t nfs_dupreq_finish(struct svc_req *req, nfs_res_t *res_nfs)
 	if (dv == (void *)DUPREQ_NOCACHE)
 		goto out;
 
-	/* do nothing if nfs_dupreq_start failed completely */
-	if (dv == (void *)DUPREQ_BAD_ADDR1)
-		goto out;
-
 	PTHREAD_MUTEX_lock(&dv->mtx);
 	dv->res = res_nfs;
 	dv->timestamp = time(NULL);
@@ -1218,7 +1210,7 @@ dq_again:
 			TAILQ_REMOVE(&drc->dupreq_q, ov, fifo_q);
 			--(drc->size);
 			/* release dv's ref */
-			nfs_dupreq_put_drc(NULL, drc, DRC_FLAG_LOCKED);
+			nfs_dupreq_put_drc(drc, DRC_FLAG_LOCKED);
 			/* drc->mtx gets unlocked in the above call! */
 
 			rbtree_x_cached_remove(&drc->xt, t, &ov->rbt_k, ov->hk);
@@ -1278,10 +1270,6 @@ dupreq_status_t nfs_dupreq_delete(struct svc_req *req)
 	if (dv == (void *)DUPREQ_NOCACHE)
 		goto out;
 
-	/* do nothing if nfs_dupreq_start failed completely */
-	if (dv == (void *)DUPREQ_BAD_ADDR1)
-		goto out;
-
 	PTHREAD_MUTEX_lock(&dv->mtx);
 	drc = dv->hin.drc;
 	dv->state = DUPREQ_DELETED;
@@ -1307,7 +1295,7 @@ dupreq_status_t nfs_dupreq_delete(struct svc_req *req)
 	--(drc->size);
 
 	/* release dv's ref on drc and unlock */
-	nfs_dupreq_put_drc(req->rq_xprt, drc, DRC_FLAG_LOCKED);
+	nfs_dupreq_put_drc(drc, DRC_FLAG_LOCKED);
 	/* !LOCKED */
 
 	/* we removed the dupreq from hashtable, release a ref */

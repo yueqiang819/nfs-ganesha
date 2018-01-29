@@ -17,6 +17,7 @@ set(GTEST_LIBRARIES
   ${SYSTEM_LIBRARIES}
   ${UNITTEST_LIBS}
   ${LTTNG_LIBRARIES}
+  ${LTTNG_CTL_LIBRARIES}
   )
 
 # generic test
@@ -61,6 +62,22 @@ add_sanitizers(test_lookup_latency)
 
 target_link_libraries(test_lookup_latency
   ${GTEST_LIBRARIES}
+  ${GPERFTOOLS_LIBRARIES}
   )
 set_target_properties(test_lookup_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_readlink_latency_SRCS
+  test_readlink_latency.cc
+  )
+
+add_executable(test_readlink_latency
+  ${test_readlink_latency_SRCS})
+add_sanitizers(test_readlink_latency)
+
+target_link_libraries(test_readlink_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_readlink_latency PROPERTIES COMPILE_FLAGS
   "${UNITTEST_CXX_FLAGS}")

@@ -45,7 +45,7 @@ set(GANESHA_PATCH_LEVEL )
 # Extra version is for naming development/RC.  It is blank in master/stable branches
 # so it can be available to end-users to name local variants/versions
 # If used, it is always of the form "-whateveryouwant"
-set(GANESHA_EXTRA_VERSION -dev.22)
+set(GANESHA_EXTRA_VERSION -rc4)
 
 set(GANESHA_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL}${GANESHA_EXTRA_VERSION})
 set(GANESHA_BASE_VERSION ${GANESHA_MAJOR_VERSION}.${GANESHA_MINOR_VERSION}${GANESHA_PATCH_LEVEL})
@@ -320,12 +320,19 @@ option(USE_GTEST "Use Google Test test framework" OFF)
 option(GTEST_PREFIX "Google Test installation prefix"
   "/opt/gmock/gtest")
 if(USE_GTEST)
-  if (NOT GTEST_PREFIX)
-    set(GTEST_PREFIX "/opt/gmock/gtest")
-  endif(NOT GTEST_PREFIX)
-  set(GTEST_PREFIX ${GTEST_PREFIX} CACHE PATH "Google Test path")
-  find_library(GTEST NAMES gtest PATHS "${GTEST_PREFIX}")
-  find_library(GTEST_MAIN NAMES gtest_main PATHS "${GTEST_PREFIX}")
+  find_package(LTTng)
+  find_package(Gperftools)
+  if(LTTNG_CTL_FOUND AND GPERFTOOLS_FOUND)
+    if (NOT GTEST_PREFIX)
+      set(GTEST_PREFIX "/opt/gmock/gtest")
+    endif(NOT GTEST_PREFIX)
+    set(GTEST_PREFIX ${GTEST_PREFIX} CACHE PATH "Google Test path")
+    find_library(GTEST NAMES gtest PATHS "${GTEST_PREFIX}")
+    find_library(GTEST_MAIN NAMES gtest_main PATHS "${GTEST_PREFIX}")
+  else(LTTNG_CTL_FOUND AND GPERFTOOLS_FOUND)
+    message(WARNING "Couldn't find eithe LTTng ctl libraries or gperftools. Disabling USE_GTEST")
+    set(USE_GTEST OFF)
+  endif(LTTNG_CTL_FOUND AND GPERFTOOLS_FOUND)
 endif(USE_GTEST)
 
 # NFS RDMA
