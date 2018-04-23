@@ -151,45 +151,6 @@ mdcache_fsal_init_config(struct fsal_module *fsal_hdl,
 }
 
 /**
- * @brief Enable caching for a FSAL export
- *
- * This is the API to call to enable caching on an export.  The sub-FSAL calls
- * this with with the up_ops that were passed to it, and is wrapped in a
- * FSAL_MDCACHE instance to do caching.  @ref op_ctx should already be
- * initialized by the sub-FSAL.  On success, @a mdc_up_ops will contain
- * the up_ops for the MDCACHE instance, that the sub-FSAL can the specialize.
- *
- * @see mdcache_fsal_create_export
- *
- * @param[in] super_up_ops	FSAL_UP ops for the super-FSAL
- * @param[out] mdc_up_ops	FSAL_UP ops for MDCACHE
- * @return FSAL status
- */
-fsal_status_t mdcache_export_init(const struct fsal_up_vector *super_up_ops,
-				  const struct fsal_up_vector **mdc_up_ops)
-{
-	struct mdcache_fsal_export *exp;
-	struct fsal_up_vector my_up_ops;
-	fsal_status_t status;
-
-	/* Get ref on FSAL MDCACHE for sub FSAL. Done before mdc_init_export */
-	fsal_get(&MDCACHE.fsal);
-
-	*mdc_up_ops = NULL;
-	mdcache_export_up_ops_init(&my_up_ops, super_up_ops);
-	status =  mdc_init_export(&MDCACHE.fsal, &my_up_ops, super_up_ops);
-	if (FSAL_IS_ERROR(status)) {
-		fsal_put(&MDCACHE.fsal);
-		return status;
-	}
-
-	exp = mdc_cur_export();
-	*mdc_up_ops = &exp->up_ops;
-
-	return fsalstat(ERR_FSAL_NO_ERROR, 0);
-}
-
-/**
  * @brief Clean up caching for a FSAL export on error
  *
  * If init has an error after @ref mdcache_export_init is called, this should be
@@ -203,6 +164,11 @@ void mdcache_export_uninit(void)
 	struct fsal_export *sub_export = exp->mfe_exp.sub_export;
 
 	fsal_put(sub_export->fsal);
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "FSAL %s refcount %"PRIu32,
+		     sub_export->fsal->name,
+		     atomic_fetch_int32_t(&sub_export->fsal->refcount));
 
 	fsal_detach_export(op_ctx->fsal_export->fsal,
 			   &op_ctx->fsal_export->exports);
@@ -281,6 +247,12 @@ mdcache_fsal_create_export(struct fsal_module *sub_fsal, void *parse_node,
 
 	/* Get ref for sub-FSAL */
 	fsal_get(myself->mfe_exp.fsal);
+
+	LogFullDebug(COMPONENT_FSAL,
+		     "FSAL %s refcount %"PRIu32,
+		     myself->mfe_exp.fsal->name,
+		     atomic_fetch_int32_t(&myself->mfe_exp.fsal->refcount));
+
 	fsal_export_stack(op_ctx->fsal_export, &myself->mfe_exp);
 
 

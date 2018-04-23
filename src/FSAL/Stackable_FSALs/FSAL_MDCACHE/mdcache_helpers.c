@@ -160,10 +160,19 @@ static mdcache_entry_t *mdcache_alloc_handle(
 	/* mdcache handlers */
 	mdcache_handle_ops_init(&result->obj_handle.obj_ops);
 	/* state */
-	if (sub_handle->type == DIRECTORY)
+	if (sub_handle->type == DIRECTORY) {
 		result->obj_handle.state_hdl = &result->fsobj.fsdir.dhdl;
-	else
+		/* init avl tree */
+		mdcache_avl_init(result);
+
+		/* init chunk list and detached dirents list */
+		glist_init(&result->fsobj.fsdir.chunks);
+		glist_init(&result->fsobj.fsdir.detached);
+		(void) pthread_spin_init(&result->fsobj.fsdir.spin,
+					 PTHREAD_PROCESS_PRIVATE);
+	} else {
 		result->obj_handle.state_hdl = &result->fsobj.hdl;
+	}
 	state_hdl_init(result->obj_handle.state_hdl, result->obj_handle.type,
 		       &result->obj_handle);
 
@@ -186,6 +195,8 @@ static mdcache_entry_t *mdcache_alloc_handle(
 			 "Trying to allocate a new entry %p for export id %"
 			 PRIi16" that is in the process of being unexported",
 			 result, op_ctx->ctx_export->export_id);
+		/* sub_handle will be freed by the caller */
+		result->sub_handle = NULL;
 		mdcache_put(result);
 		/* Handle is not yet in hash / LRU, so just put the sentinal
 		 * ref */
@@ -666,14 +677,6 @@ mdcache_new_entry(struct mdcache_fsal_export *export,
 						   MDCACHE_DIR_POPULATED);
 		}
 
-		/* init avl tree */
-		mdcache_avl_init(nentry);
-
-		/* init chunk list and detached dirents list */
-		glist_init(&nentry->fsobj.fsdir.chunks);
-		glist_init(&nentry->fsobj.fsdir.detached);
-		(void) pthread_spin_init(&nentry->fsobj.fsdir.spin,
-					 PTHREAD_PROCESS_PRIVATE);
 		break;
 
 	case SYMBOLIC_LINK:
@@ -759,6 +762,7 @@ mdcache_new_entry(struct mdcache_fsal_export *export,
 	 * may not have copied yet, in which case mask and acl are 0/NULL.  This
 	 * entry is not yet in the hash or LRU, so just put it's sentinal ref.
 	 */
+	nentry->sub_handle = NULL;
 	mdcache_put(nentry);
 	mdcache_put(nentry);
 

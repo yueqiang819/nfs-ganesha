@@ -747,6 +747,10 @@ static int fsal_cfg_commit(void *node, void *link_mem, void *self_struct,
 			"Could not create export for (%s) to (%s)",
 			export->pseudopath,
 			export->fullpath);
+		LogFullDebug(COMPONENT_FSAL,
+			     "FSAL %s refcount %"PRIu32,
+			     fsal->name,
+			     atomic_fetch_int32_t(&fsal->refcount));
 		err_type->export_ = true;
 		errcnt++;
 		goto err;
@@ -1900,16 +1904,18 @@ static int build_default_root(struct config_error_type *err_type)
 	} else {
 		fsal_status_t rc;
 
-		rc = fsal_hdl->m_ops.create_export(fsal_hdl,
-						   NULL,
-						   err_type,
-						   &fsal_up_top);
+		rc = mdcache_fsal_create_export(fsal_hdl, NULL, err_type,
+						&fsal_up_top);
 
 		if (FSAL_IS_ERROR(rc)) {
 			fsal_put(fsal_hdl);
 			LogCrit(COMPONENT_CONFIG,
 				"Could not create FSAL export for %s",
 				export->fullpath);
+			LogFullDebug(COMPONENT_FSAL,
+				     "FSAL %s refcount %"PRIu32,
+				     fsal_hdl->name,
+				     atomic_fetch_int32_t(&fsal_hdl->refcount));
 			goto err_out;
 		}
 
@@ -1923,6 +1929,10 @@ static int build_default_root(struct config_error_type *err_type)
 		fsal_put(fsal_hdl);
 		LogCrit(COMPONENT_CONFIG,
 			"Failed to insert pseudo root   In use??");
+		LogFullDebug(COMPONENT_FSAL,
+			     "FSAL %s refcount %"PRIu32,
+			     fsal_hdl->name,
+			     atomic_fetch_int32_t(&fsal_hdl->refcount));
 		goto err_out;
 	}
 
@@ -2066,6 +2076,10 @@ void free_export_resources(struct gsh_export *export)
 
 		export->fsal_export->exp_ops.release(export->fsal_export);
 		fsal_put(fsal);
+		LogFullDebug(COMPONENT_FSAL,
+			     "FSAL %s refcount %"PRIu32,
+			     fsal->name,
+			     atomic_fetch_int32_t(&fsal->refcount));
 	}
 	export->fsal_export = NULL;
 	/* free strings here */

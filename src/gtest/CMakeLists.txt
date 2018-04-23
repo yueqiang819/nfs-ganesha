@@ -52,6 +52,7 @@ target_link_libraries(test_ci_hash_dist1
 set_target_properties(test_ci_hash_dist1 PROPERTIES COMPILE_FLAGS
   "${UNITTEST_CXX_FLAGS}")
 
+
 set(test_lookup_latency_SRCS
   test_lookup_latency.cc
   )
@@ -80,4 +81,79 @@ target_link_libraries(test_readlink_latency
   ${GTEST_LIBRARIES}
   )
 set_target_properties(test_readlink_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_mkdir_latency_SRCS
+  test_mkdir_latency.cc
+  )
+
+add_executable(test_mkdir_latency
+  ${test_mkdir_latency_SRCS})
+add_sanitizers(test_mkdir_latency)
+
+target_link_libraries(test_mkdir_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_mkdir_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_symlink_latency_SRCS
+  test_symlink_latency.cc
+  )
+
+add_executable(test_symlink_latency
+  ${test_symlink_latency_SRCS})
+add_sanitizers(test_symlink_latency)
+
+target_link_libraries(test_symlink_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_symlink_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_link_latency_SRCS
+  test_link_latency.cc
+  )
+
+add_executable(test_link_latency
+  ${test_link_latency_SRCS})
+add_sanitizers(test_link_latency)
+
+target_link_libraries(test_link_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_link_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_unlink_latency_SRCS
+  test_unlink_latency.cc
+  )
+
+add_executable(test_unlink_latency
+  ${test_unlink_latency_SRCS})
+add_sanitizers(test_unlink_latency)
+
+target_link_libraries(test_unlink_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_unlink_latency PROPERTIES COMPILE_FLAGS
+  "${UNITTEST_CXX_FLAGS}")
+
+
+set(test_rename_latency_SRCS
+  test_rename_latency.cc
+  )
+
+add_executable(test_rename_latency
+  ${test_rename_latency_SRCS})
+add_sanitizers(test_rename_latency)
+
+target_link_libraries(test_rename_latency
+  ${GTEST_LIBRARIES}
+  )
+set_target_properties(test_rename_latency PROPERTIES COMPILE_FLAGS
   "${UNITTEST_CXX_FLAGS}")
