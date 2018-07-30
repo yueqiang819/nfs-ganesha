@@ -42,9 +42,7 @@ NFS_CORE_PARAM {}
 
 	Rquota_Port (uint16, range 0 to UINT16_MAX, default 875)
 
-	Bind_addr(IP4 addr, default 0.0.0.0)
-
-	* This eventually needs to support IPv6
+	Bind_addr(IPv4 or IPv6 addr, default 0.0.0.0)
 
 	NFS_Program(uint32, range 1 to INT32_MAX, default  100003)
 
@@ -184,7 +182,8 @@ NFSV4 {}
 
 	Delegations(bool, default false)
 
-	RecoveryBackend(path, default "fs")
+	RecoveryBackend(enum, values [fs, fs_ng, rados_kv, rados_ng],
+			default fs)
 
 	Minor_Versions(enum list, values [0, 1, 2], default [0, 1, 2])
 
@@ -269,9 +268,9 @@ EXPORT {}
 
 	PrefReaddir(uint64, range 512 to 64*1024*1024, default 16384)
 
-	MaxOffsetWrite(uint64, range 512 to UINT64_MAX, default UINT64_MAX)
+	MaxOffsetWrite(uint64, range 512 to UINT64_MAX, default INT64_MAX)
 
-	MaxOffsetRead(uint64, range 512 to UINT64_MAX, default UINT64_MAX)
+	MaxOffsetRead(uint64, range 512 to UINT64_MAX, default INT64_MAX)
 
 	DisableReaddirPlus(bool, default false)
 
@@ -499,8 +498,6 @@ CACHEINODE
 	Entries_HWMark(uint32, range 1 to UINT32_MAX, default 100000)
 
 	LRU_Run_Interval(uint32, range 1 to 24 * 3600, default 90)
-
-	Cache_FDs(bool, default true)
 
 	FD_Limit_Percent(uint32, range 0 to 100, default 99)
 

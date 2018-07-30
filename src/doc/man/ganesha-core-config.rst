@@ -31,9 +31,8 @@ MNT_Port (uint16, range 0 to UINT16_MAX, default 0)
 NLM_Port (uint16, range 0 to UINT16_MAX, default 0)
     Port number used by NLM Protocol.
 
-Bind_addr(IP4 addr, default 0.0.0.0)
+Bind_addr(IPv4 or IPv6 addr, default 0.0.0.0)
     The address to which to bind for our listening port.
-    IPv4 only, for now.
 
 NFS_Program(uint32, range 1 to INT32_MAX, default 100003)
     RPC program number for NFS.
@@ -93,7 +92,10 @@ Enable_NLM(bool, default true)
 Blocked_Lock_Poller_Interval(int64, range 0 to 180, default 10)
     Polling interval for blocked lock polling thread
 
-Protocols(enum list, values [3, 4, NFS3, NFS4, V3, V4, NFSv3, NFSv4, 9P], default [3, 4, 9P])
+Protocols(enum list, default [3,4,9P])
+    Possible values:
+        3, 4, NFS3, NFS4, V3, V4, NFSv3, NFSv4, 9P
+
     The protocols that Ganesha will listen for.  This is a hard limit, as this
     list determines which sockets are opened.  This list can be restricted per
     export, but cannot be expanded.
@@ -286,8 +288,10 @@ pnfs_ds(bool, default false)
 
 RecoveryBackend(path, default "fs")
     Use different backend for client info:
-    - fs : shared filesystem
+    - fs : filesystem
+    - fs_ng: filesystem (better resiliency)
     - rados_kv : rados key-value
+    - rados_ng : rados key-value (better resiliency)
 
 Minor_Versions(enum list, values [0, 1, 2], default [0, 1, 2])
     List of supported NFSV4 minor version numbers.
