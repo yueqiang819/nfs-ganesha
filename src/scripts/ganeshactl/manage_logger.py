@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 #
 # manage_logger.py - commandline tool for setting log levels of nfs-ganesha.
 #

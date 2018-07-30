@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 
 # You must initialize the gobject/dbus support for threading
 # before doing anything.

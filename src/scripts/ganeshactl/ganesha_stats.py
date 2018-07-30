@@ -1,4 +1,4 @@
-#!/usr/bin/python2
+#!/usr/bin/python
 #
 # This command receives statistics from Ganesha over DBus. The format for a command is:
 # ./ganesha_stats.py <command> <option>
