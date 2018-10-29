@@ -942,6 +942,10 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 	struct attrlist attrs;
 	fsal_status_t status;
 
+	LogDebug(COMPONENT_CACHE_INODE,
+			 "Fujitsu: mdcache_locate_host FSAL %s",
+			 (*entry)->sub_handle->fsal->name);
+
 	/* Copy the fh_desc into key, todo: is there a function for this? */
 	/* We want to save fh_desc */
 	key.kv.len = fh_desc->len;
@@ -953,8 +957,12 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 	       );
 
 	if (FSAL_IS_ERROR(status))
+	{
+		LogDebug(COMPONENT_CACHE_INODE,
+				 "Fujitsu: host_to_key status: %s",
+				 fsal_err_txt(status));
 		return status;
-
+	}
 	(void)cih_hash_key(&key, sub_export->fsal, &key.kv,
 			    CIH_HASH_KEY_PROTOTYPE);
 
@@ -990,6 +998,10 @@ mdcache_locate_host(struct gsh_buffdesc *fh_desc,
 		LogDebug(COMPONENT_CACHE_INODE,
 			 "create_handle failed with %s",
 			 fsal_err_txt(status));
+		if (*entry != NULL)
+			LogDebug(COMPONENT_CACHE_INODE,
+				"Fujitsu: create_handle failed FSAL %s",
+				(*entry)->sub_handle->fsal->name);
 		*entry = NULL;
 		fsal_release_attrs(&attrs);
 		return status;
